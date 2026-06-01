@@ -1,0 +1,27 @@
+services:
+  - type: web
+    name: kommo-sync
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: kommo-db
+          property: connectionString
+      - key: KOMMO_CLIENT_ID
+        sync: false
+      - key: KOMMO_CLIENT_SECRET
+        sync: false
+      - key: KOMMO_REDIRECT_URI
+        sync: false
+      - key: KOMMO_DOMAIN
+        sync: false
+      - key: WEBHOOK_SECRET
+        sync: false
+
+databases:
+  - name: kommo-db
+    databaseName: kommo_sync
+    user: kommo_user
+    plan: free
