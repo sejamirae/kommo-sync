@@ -149,3 +149,53 @@ async def get_expansion_stages(pipeline_id: int, db: AsyncSession = Depends(get_
         "pipeline_name": data.get("name"),
         "stages": [{"id": s["id"], "name": s["name"]} for s in stages],
     }
+
+
+@router.get("/kommo-notes/{lead_id}", summary="Busca notas e eventos do lead direto da Kommo")
+async def get_kommo_notes(lead_id: int, db: AsyncSession = Depends(get_db)):
+    import httpx
+    from app.services.kommo import get_valid_token
+    from app.config import get_settings
+    settings = get_settings()
+    access_token = await get_valid_token(db)
+
+    async with httpx.AsyncClient() as client:
+        resp = await client.get(
+            f"https://{settings.KOMMO_DOMAIN}/api/v4/leads/{lead_id}/notes",
+            headers={"Authorization": f"Bearer {access_token}"},
+            params={"limit": 50, "order[id]": "asc"},
+        )
+        if resp.status_code == 404:
+            return []
+        resp.raise_for_status()
+        data = resp.json()
+
+    notes = data.get("_embedded", {}).get("notes", [])
+    type_map = {
+        1: "ligacao", 2: "email", 3: "nota", 4: "reuniao",
+        10: "whatsapp", 25: "whatsapp", 102: "email", 4: "nota"
+    }
+    result = []
+    for n in notes:
+        note_type = n.get("note_type", 3)
+        params = n.get("params", {})
+        text = (
+            params.get("text") or
+            params.get("description") or
+            params.get("body") or
+            n.get("text", "") or
+            f"[{note_type}]"
+        )
+        created = n.get("created_at", 0)
+        import datetime
+        dt = datetime.datetime.fromtimestamp(created).strftime("%d/%m/%Y %H:%M") if created else ""
+        result.append({
+            "id": n.get("id"),
+            "type": type_map.get(note_type, "nota"),
+            "note_type": note_type,
+            "text": str(text)[:500],
+            "author": str(n.get("created_by", "Kommo")),
+            "date": dt,
+            "source": "kommo",
+        })
+    return result
