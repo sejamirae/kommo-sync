@@ -6,7 +6,7 @@ from apscheduler.triggers.interval import IntervalTrigger
 
 from app.database import engine, Base, AsyncSessionLocal
 from fastapi.middleware.cors import CORSMiddleware
-from app.routes import oauth, webhook, leads, contacts, logs
+from app.routes import oauth, webhook, leads, contacts, logs, pipelines, expansion
 from app.services.sync import sync_leads, sync_contacts
 
 
@@ -56,6 +56,8 @@ app.include_router(webhook.router)
 app.include_router(leads.router)
 app.include_router(contacts.router)
 app.include_router(logs.router)
+app.include_router(pipelines.router)
+app.include_router(expansion.router)
 
 
 @app.get("/", tags=["Health"])
