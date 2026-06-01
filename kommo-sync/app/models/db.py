@@ -78,3 +78,45 @@ class SyncLog(Base):
     status      = Column(String(20), default="ok")   # ok | error
     message     = Column(Text)
     created_at  = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class ExpansionField(Base):
+    """Campos extras do pipeline Expansão — salvos no banco, compartilhados pela equipe."""
+    __tablename__ = "expansion_fields"
+
+    lead_id             = Column(BigInteger, primary_key=True)
+    nome_completo       = Column(String(500))
+    crm                 = Column(String(100))
+    telefone            = Column(String(100))
+    cliente             = Column(String(255))
+    especialidade       = Column(String(255))
+    unidade             = Column(String(255))
+    dia_semana          = Column(String(100))
+    frequencia          = Column(String(100))
+    horario             = Column(String(100))
+    horas               = Column(String(50))
+    data_envio          = Column(String(20))
+    data_fechamento     = Column(String(20))
+    previsao_inicio     = Column(String(20))
+    unidade_pagamento   = Column(String(100))
+    valor_mirae         = Column(String(50))
+    valor_medico        = Column(String(50))
+    onboarding          = Column(String(20))
+    origem              = Column(String(255))
+    gestor              = Column(String(255))
+    doctorid            = Column(String(50))
+    pendencias          = Column(Text)
+    observacoes         = Column(Text)
+    updated_at          = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class ExpansionNote(Base):
+    """Histórico de interações de cada lead do pipeline Expansão."""
+    __tablename__ = "expansion_notes"
+
+    id         = Column(Integer, primary_key=True, autoincrement=True)
+    lead_id    = Column(BigInteger, nullable=False, index=True)
+    type       = Column(String(50))   # nota, email, whatsapp, ligacao, reuniao
+    text       = Column(Text, nullable=False)
+    author     = Column(String(255))
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
