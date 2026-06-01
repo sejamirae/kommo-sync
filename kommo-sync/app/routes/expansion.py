@@ -81,32 +81,34 @@ class NoteIn(BaseModel):
 @router.post("/setup-fields", summary="Cria custom fields do pipeline Expansão na Kommo (rodar 1x)")
 async def setup_custom_fields(db: AsyncSession = Depends(get_db)):
     access_token = await get_valid_token(db)
+    headers = {"Authorization": f"Bearer {access_token}"}
 
-    # Busca campos já existentes
+    # Busca TODOS os custom fields de leads (sem filtro de pipeline)
     async with httpx.AsyncClient() as client:
-        resp = await client.get(
-            f"{BASE}/leads/custom_fields",
-            headers={"Authorization": f"Bearer {access_token}"},
-            params={"filter[pipeline_id]": PIPELINE_ID},
-        )
-        existing = {f["name"]: f["id"] for f in resp.json().get("_embedded", {}).get("custom_fields", [])}
+        resp = await client.get(f"{BASE}/leads/custom_fields", headers=headers, params={"limit": 250})
+        all_fields = resp.json().get("_embedded", {}).get("custom_fields", [])
+        existing = {f["name"]: f["id"] for f in all_fields}
 
-    created, skipped = [], []
+    created, skipped, errors = [], [], []
     async with httpx.AsyncClient() as client:
         for field in CUSTOM_FIELDS:
             if field["name"] in existing:
-                skipped.append(field["name"])
+                skipped.append(f"{field['name']} (id:{existing[field['name']]})")
                 continue
-            payload = {"name": field["name"], "type": field["type"], "pipeline_id": PIPELINE_ID}
+            # Cria sem pipeline_id — campos globais de leads
             r = await client.post(
                 f"{BASE}/leads/custom_fields",
-                headers={"Authorization": f"Bearer {access_token}"},
-                json=[payload],
+                headers=headers,
+                json=[{"name": field["name"], "type": field["type"]}],
             )
             if r.status_code in (200, 201):
-                created.append(field["name"])
+                data = r.json().get("_embedded", {}).get("custom_fields", [])
+                if data:
+                    created.append(f"{field['name']} (id:{data[0]['id']})")
+            else:
+                errors.append(f"{field['name']}: {r.status_code} {r.text[:100]}")
 
-    return {"created": created, "skipped": skipped}
+    return {"created": created, "skipped": skipped, "errors": errors}
 
 
 @router.get("/field-ids", summary="Retorna IDs dos custom fields do pipeline Expansão")
