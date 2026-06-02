@@ -93,6 +93,34 @@ async def manual_sync(db: AsyncSession = Depends(get_db)):
     return {"synced": total}
 
 
+@router.delete("/{lead_id}", summary="Exclui lead da Kommo e do banco")
+async def delete_lead(lead_id: int, db: AsyncSession = Depends(get_db)):
+    from app.services.kommo import get_valid_token
+    from app.config import get_settings
+    import httpx
+    settings = get_settings()
+    access_token = await get_valid_token(db)
+
+    # Deleta na Kommo — usa query param conforme doc da API v4
+    async with httpx.AsyncClient(timeout=15) as client:
+        resp = await client.delete(
+            f"https://{settings.KOMMO_DOMAIN}/api/v4/leads",
+            headers={"Authorization": f"Bearer {access_token}"},
+            params={"id[]": lead_id},
+        )
+        # 204 = deleted, 404 = não existe na Kommo (ok, remove do banco mesmo assim)
+        kommo_ok = resp.status_code in (200, 204, 404)
+
+    # Deleta no banco local
+    result = await db.execute(select(Lead).where(Lead.id == lead_id))
+    lead = result.scalar_one_or_none()
+    if lead:
+        await db.delete(lead)
+        await db.commit()
+
+    return {"ok": True, "deleted": lead_id}
+
+
 @router.post("/sync-pipeline", summary="Sync rápido de um pipeline específico")
 async def sync_pipeline(pipeline_id: int, db: AsyncSession = Depends(get_db)):
     """Sincroniza apenas os leads de um pipeline — muito mais rápido que sync total."""

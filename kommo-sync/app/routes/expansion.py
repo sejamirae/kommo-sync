@@ -227,56 +227,55 @@ async def save_fields(lead_id: int, body: FieldsIn, db: AsyncSession = Depends(g
             await client.patch(f"{BASE}/leads", headers=headers,
                                json=[{"id": lead_id, "custom_fields_values": cfv}])
 
-        # 3. Cria/atualiza contato e vincula ao lead
-        nome = data.get("nome_completo", "")
+        # 3. Atualiza Tel. comercial no contato já vinculado ao lead
         telefone = data.get("telefone", "")
-        crm = data.get("crm", "")
+        nome = data.get("nome_completo", "")
 
-        if nome:
-            # Busca contato existente pelo nome
-            r = await client.get(f"{BASE}/contacts", headers=headers,
-                                 params={"query": nome, "limit": 5})
-            contacts = r.json().get("_embedded", {}).get("contacts", []) if r.status_code == 200 else []
+        if telefone or nome:
             contact_id = None
 
-            # Verifica se o lead já tem contato vinculado
-            r_lead = await client.get(f"{BASE}/leads/{lead_id}", headers=headers,
-                                      params={"with": "contacts"})
+            # Busca contato já vinculado ao lead
+            r_lead = await client.get(
+                f"{BASE}/leads/{lead_id}",
+                headers=headers,
+                params={"with": "contacts"},
+            )
             if r_lead.status_code == 200:
                 linked = r_lead.json().get("_embedded", {}).get("contacts", [])
                 if linked:
                     contact_id = linked[0]["id"]
 
-            # Monta payload do contato com telefone no campo padrão
-            contact_payload = {"name": nome}
+            contact_payload = {}
+            if nome:
+                contact_payload["name"] = nome
             if telefone:
                 contact_payload["custom_fields_values"] = [
-                    {
-                        "field_code": "PHONE",
-                        "values": [{"value": telefone, "enum_code": "WORK"}]
-                    }
+                    {"field_code": "PHONE", "values": [{"value": telefone, "enum_code": "WORK"}]}
                 ]
 
-            if contact_id:
-                # Atualiza contato existente — sobrescreve telefone
-                await client.patch(f"{BASE}/contacts", headers=headers,
-                                   json=[{"id": contact_id, **contact_payload}])
-            else:
-                # Cria novo contato
-                rc = await client.post(f"{BASE}/contacts", headers=headers,
-                                       json=[contact_payload])
+            if contact_id and contact_payload:
+                # Atualiza contato existente
+                await client.patch(
+                    f"{BASE}/contacts",
+                    headers=headers,
+                    json=[{"id": contact_id, **contact_payload}],
+                )
+            elif not contact_id and nome:
+                # Nenhum contato vinculado — cria e vincula
+                rc = await client.post(
+                    f"{BASE}/contacts",
+                    headers=headers,
+                    json=[contact_payload],
+                )
                 if rc.status_code in (200, 201):
                     new_contacts = rc.json().get("_embedded", {}).get("contacts", [])
                     if new_contacts:
                         contact_id = new_contacts[0]["id"]
-
-            # Vincula contato ao lead (se ainda não vinculado)
-            if contact_id:
-                await client.post(
-                    f"{BASE}/leads/{lead_id}/links",
-                    headers=headers,
-                    json=[{"to_entity_id": contact_id, "to_entity_type": "contacts"}]
-                )
+                        await client.post(
+                            f"{BASE}/leads/{lead_id}/links",
+                            headers=headers,
+                            json=[{"to_entity_id": contact_id, "to_entity_type": "contacts"}],
+                        )
 
     return {"ok": True}
 
