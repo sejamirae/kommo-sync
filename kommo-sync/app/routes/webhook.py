@@ -1,4 +1,5 @@
 # app/routes/webhook.py
+import re
 import json
 from fastapi import APIRouter, Depends, Request, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -16,15 +17,13 @@ async def kommo_webhook(
     request: Request,
     db: AsyncSession = Depends(get_db),
 ):
-    # Validação de secret (opcional mas recomendado)
     if settings.WEBHOOK_SECRET:
         secret = request.headers.get("X-Kommo-Secret", "")
         if secret != settings.WEBHOOK_SECRET:
             raise HTTPException(status_code=403, detail="Invalid webhook secret")
 
-    # Kommo envia form-encoded
+    # Kommo envia form-encoded: leads[status][0][id]=123&leads[status][0][pipeline_id]=456
     form = await request.form()
-    # Converte MultiDict → dict aninhado
     payload: dict = {}
     for key, value in form.multi_items():
         _set_nested(payload, key, value)
@@ -34,17 +33,23 @@ async def kommo_webhook(
 
 
 def _set_nested(d: dict, key: str, value):
-    """Converte chaves 'leads[status][0][id]' em dict aninhado."""
-    import re
-    parts = re.split(r"[\[\]]+", key)
-    parts = [p for p in parts if p]
+    """
+    Converte 'leads[status][0][id]' → {'leads': {'status': {'0': {'id': value}}}}
+    Lida corretamente com índices numéricos e valores já existentes.
+    """
+    parts = [p for p in re.split(r"[\[\]]+", key) if p]
     ref = d
     for part in parts[:-1]:
-        if part not in ref:
+        existing = ref.get(part)
+        if existing is None:
             ref[part] = {}
-        ref = ref[part]
+            ref = ref[part]
+        elif isinstance(existing, dict):
+            ref = existing
+        else:
+            # Já existe um valor escalar — transforma em dict
+            ref[part] = {"_val": existing}
+            ref = ref[part]
     last = parts[-1]
-    if last in ref and isinstance(ref[last], dict):
-        pass  # já existe como dict
-    else:
+    if last not in ref or not isinstance(ref[last], dict):
         ref[last] = value
