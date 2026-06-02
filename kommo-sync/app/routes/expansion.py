@@ -304,12 +304,18 @@ async def save_fields(lead_id: int, body: FieldsIn, db: AsyncSession = Depends(g
 
 @router.get("/notes/{lead_id}", summary="Notas manuais do banco")
 async def get_notes(lead_id: int, db: AsyncSession = Depends(get_db)):
+    import pytz
+    tz_br = pytz.timezone('America/Sao_Paulo')
     result = await db.execute(
         select(ExpansionNote).where(ExpansionNote.lead_id == lead_id).order_by(ExpansionNote.created_at)
     )
+    def fmt_dt(dt):
+        if not dt: return ""
+        try: return pytz.utc.localize(dt).astimezone(tz_br).strftime("%d/%m/%Y %H:%M")
+        except: return dt.strftime("%d/%m/%Y %H:%M")
     return [
         {"id": n.id, "type": n.type, "text": n.text, "author": n.author,
-         "date": n.created_at.strftime("%d/%m/%Y %H:%M") if n.created_at else "", "source": "local"}
+         "date": fmt_dt(n.created_at), "source": "local"}
         for n in result.scalars().all()
     ]
 
