@@ -247,18 +247,18 @@ async def save_fields(lead_id: int, body: FieldsIn, db: AsyncSession = Depends(g
                 if linked:
                     contact_id = linked[0]["id"]
 
+            # Monta payload do contato com telefone no campo padrão
             contact_payload = {"name": nome}
-            custom_contact = []
-
-            # Busca IDs dos campos do contato para CRM e Tel. comercial
-            # Tel. comercial usa field_code PHONE, CRM é custom
             if telefone:
                 contact_payload["custom_fields_values"] = [
-                    {"field_code": "PHONE", "values": [{"value": telefone, "enum_code": "WORK"}]}
+                    {
+                        "field_code": "PHONE",
+                        "values": [{"value": telefone, "enum_code": "WORK"}]
+                    }
                 ]
 
             if contact_id:
-                # Atualiza contato existente
+                # Atualiza contato existente — sobrescreve telefone
                 await client.patch(f"{BASE}/contacts", headers=headers,
                                    json=[{"id": contact_id, **contact_payload}])
             else:
@@ -270,10 +270,13 @@ async def save_fields(lead_id: int, body: FieldsIn, db: AsyncSession = Depends(g
                     if new_contacts:
                         contact_id = new_contacts[0]["id"]
 
-            # Vincula contato ao lead
+            # Vincula contato ao lead (se ainda não vinculado)
             if contact_id:
-                await client.post(f"{BASE}/leads/{lead_id}/links", headers=headers,
-                                  json=[{"to_entity_id": contact_id, "to_entity_type": "contacts"}])
+                await client.post(
+                    f"{BASE}/leads/{lead_id}/links",
+                    headers=headers,
+                    json=[{"to_entity_id": contact_id, "to_entity_type": "contacts"}]
+                )
 
     return {"ok": True}
 
