@@ -321,7 +321,7 @@ async def add_note(lead_id: int, body: NoteIn, db: AsyncSession = Depends(get_db
     await db.commit()
     await db.refresh(note)
     return {"id": note.id, "type": note.type, "text": note.text, "author": note.author,
-            "date": note.created_at.strftime("%d/%m/%Y %H:%M") if note.created_at else "", "source": "local"}
+            "date": note.created_at.astimezone(__import__('pytz').timezone('America/Sao_Paulo')).strftime("%d/%m/%Y %H:%M") if note.created_at else "", "source": "local"}
 
 
 @router.get("/kommo-notes/{lead_id}", summary="Histórico de notas da Kommo")
@@ -349,7 +349,9 @@ async def get_kommo_notes(lead_id: int, db: AsyncSession = Depends(get_db)):
         params = n.get("params", {})
         text = params.get("text") or params.get("description") or params.get("body") or n.get("text","") or f"[evento tipo {note_type}]"
         created = n.get("created_at", 0)
-        dt = datetime.datetime.fromtimestamp(created).strftime("%d/%m/%Y %H:%M") if created else ""
+        import pytz
+        tz_br = pytz.timezone("America/Sao_Paulo")
+        dt = datetime.datetime.fromtimestamp(created, tz=tz_br).strftime("%d/%m/%Y %H:%M") if created else ""
         result.append({"id": n.get("id"), "type": type_map.get(note_type,"nota"),
                        "text": str(text)[:500], "author": str(n.get("created_by","Kommo")),
                        "date": dt, "source": "kommo"})
