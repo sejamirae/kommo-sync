@@ -25,8 +25,11 @@ class CreateLeadRequest(BaseModel):
 
 
 @router.get("/", summary="Lista leads do banco local")
-async def list_leads(db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(Lead).order_by(Lead.updated_at_kommo.desc()))
+async def list_leads(pipeline_id: int = None, db: AsyncSession = Depends(get_db)):
+    query = select(Lead).order_by(Lead.updated_at_kommo.desc())
+    if pipeline_id:
+        query = query.where(Lead.pipeline_id == pipeline_id)
+    result = await db.execute(query)
     leads = result.scalars().all()
     return [
         {
