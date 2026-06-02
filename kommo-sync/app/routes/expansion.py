@@ -321,7 +321,7 @@ async def add_note(lead_id: int, body: NoteIn, db: AsyncSession = Depends(get_db
     await db.commit()
     await db.refresh(note)
     return {"id": note.id, "type": note.type, "text": note.text, "author": note.author,
-            "date": note.created_at.astimezone(__import__('pytz').timezone('America/Sao_Paulo')).strftime("%d/%m/%Y %H:%M") if note.created_at else "", "source": "local"}
+            "date": (note.created_at.replace(tzinfo=__import__('pytz').utc).astimezone(__import__('pytz').timezone('America/Sao_Paulo'))).strftime("%d/%m/%Y %H:%M") if note.created_at else "", "source": "local"}
 
 
 @router.get("/kommo-notes/{lead_id}", summary="Histórico de notas da Kommo")
