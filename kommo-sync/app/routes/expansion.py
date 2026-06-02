@@ -103,6 +103,25 @@ class NoteIn(BaseModel):
 
 # ── Setup: cria custom fields no pipeline ────────────────────────────
 
+@router.post("/migrate-db", summary="Adiciona colunas novas ao banco (rodar quando necessário)")
+async def migrate_db(db: AsyncSession = Depends(get_db)):
+    """Adiciona colunas que foram adicionadas ao model mas não existem no banco."""
+    from sqlalchemy import text
+    migrations = [
+        "ALTER TABLE expansion_fields ADD COLUMN IF NOT EXISTS status_lead VARCHAR(255)",
+        "ALTER TABLE expansion_fields ADD COLUMN IF NOT EXISTS pendencias TEXT",
+    ]
+    results = []
+    for sql in migrations:
+        try:
+            await db.execute(text(sql))
+            results.append({"sql": sql, "ok": True})
+        except Exception as ex:
+            results.append({"sql": sql, "error": str(ex)})
+    await db.commit()
+    return {"migrations": results}
+
+
 @router.post("/setup-fields", summary="Cria custom fields do pipeline Expansão na Kommo (rodar 1x)")
 async def setup_custom_fields(db: AsyncSession = Depends(get_db)):
     access_token = await get_valid_token(db)
