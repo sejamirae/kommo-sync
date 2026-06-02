@@ -91,3 +91,58 @@ async def create_new_lead(body: CreateLeadRequest, db: AsyncSession = Depends(ge
 async def manual_sync(db: AsyncSession = Depends(get_db)):
     total = await sync_leads(db)
     return {"synced": total}
+
+
+@router.post("/sync-pipeline", summary="Sync rápido de um pipeline específico")
+async def sync_pipeline(pipeline_id: int, db: AsyncSession = Depends(get_db)):
+    """Sincroniza apenas os leads de um pipeline — muito mais rápido que sync total."""
+    from app.services.kommo import get_valid_token
+    from app.config import get_settings
+    from app.services.sync import upsert_lead_from_raw
+    from sqlalchemy import delete
+    from app.models.db import Lead
+    import httpx
+
+    settings = get_settings()
+    access_token = await get_valid_token(db)
+    headers = {"Authorization": f"Bearer {access_token}"}
+
+    # Busca todos os leads do pipeline na Kommo
+    all_leads = []
+    page = 1
+    async with httpx.AsyncClient(timeout=30) as client:
+        while True:
+            resp = await client.get(
+                f"https://{settings.KOMMO_DOMAIN}/api/v4/leads",
+                headers=headers,
+                params={"filter[pipeline_id]": pipeline_id, "page": page, "limit": 250},
+            )
+            if resp.status_code == 204 or not resp.content:
+                break
+            data = resp.json()
+            leads = data.get("_embedded", {}).get("leads", [])
+            if not leads:
+                break
+            all_leads.extend(leads)
+            if len(leads) < 250:
+                break
+            page += 1
+
+    # Busca IDs atuais no banco para esse pipeline
+    kommo_ids = {l["id"] for l in all_leads}
+
+    # Remove do banco leads que não existem mais na Kommo
+    result = await db.execute(
+        select(Lead).where(Lead.pipeline_id == pipeline_id)
+    )
+    db_leads = result.scalars().all()
+    for lead in db_leads:
+        if lead.id not in kommo_ids:
+            await db.delete(lead)
+
+    # Upsert dos leads atuais
+    for raw in all_leads:
+        await upsert_lead_from_raw(raw, db)
+
+    await db.commit()
+    return {"synced": len(all_leads), "pipeline_id": pipeline_id}
