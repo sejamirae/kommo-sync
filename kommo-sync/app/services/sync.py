@@ -5,6 +5,7 @@ Chamado manualmente, via scheduler ou via webhook.
 """
 import json
 from datetime import datetime, timezone
+import httpx
 
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
@@ -139,15 +140,39 @@ async def upsert_contact_from_raw(raw: dict, db: AsyncSession) -> Contact:
 # Webhook → banco
 # ─────────────────────────────────────────────
 
+async def _fetch_lead_from_kommo(lead_id: int, access_token: str) -> dict | None:
+    """Busca dados completos de um lead direto na Kommo API."""
+    try:
+        from app.config import get_settings
+        settings = get_settings()
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.get(
+                f"https://{settings.KOMMO_DOMAIN}/api/v4/leads/{lead_id}",
+                headers={"Authorization": f"Bearer {access_token}"},
+            )
+            if resp.status_code == 200:
+                return resp.json()
+    except Exception:
+        pass
+    return None
+
+
 async def process_webhook_payload(payload: dict, db: AsyncSession):
     """
     Processa payload recebido via webhook da Kommo.
     Suporta eventos de lead (status, add, update) e contato.
+    Quando o lead não existe no banco, busca dados completos na Kommo.
     """
+    from app.services.kommo import get_valid_token
+    access_token = await get_valid_token(db)
+
     # Leads
     for event in ("add", "update", "status", "delete"):
         for raw in payload.get("leads", {}).get(event, []):
             lead_id = int(raw.get("id", 0))
+            if not lead_id:
+                continue
+
             if event == "delete":
                 result = await db.execute(select(Lead).where(Lead.id == lead_id))
                 lead = result.scalar_one_or_none()
@@ -155,21 +180,33 @@ async def process_webhook_payload(payload: dict, db: AsyncSession):
                     await db.delete(lead)
                 await _log(db, f"webhook:lead_{event}", "lead", lead_id, raw)
             else:
-                # Para webhook de status, o payload é mais enxuto
-                # Faz um upsert com o que vier
                 result = await db.execute(select(Lead).where(Lead.id == lead_id))
                 lead = result.scalar_one_or_none()
+
                 if not lead:
-                    lead = Lead(id=lead_id)
-                    db.add(lead)
-                if "name" in raw:
-                    lead.name = raw["name"]
-                if "status_id" in raw:
-                    lead.status_id = int(raw["status_id"])
-                if "pipeline_id" in raw:
-                    lead.pipeline_id = int(raw["pipeline_id"])
-                if "price" in raw:
-                    lead.price = int(raw["price"])
+                    # Lead novo — busca dados completos na Kommo
+                    full_data = await _fetch_lead_from_kommo(lead_id, access_token)
+                    if full_data:
+                        await upsert_lead_from_raw(full_data, db)
+                    else:
+                        # Fallback: cria com o que veio no webhook
+                        lead = Lead(id=lead_id)
+                        db.add(lead)
+                        if "status_id" in raw:
+                            lead.status_id = int(raw["status_id"])
+                        if "pipeline_id" in raw:
+                            lead.pipeline_id = int(raw["pipeline_id"])
+                else:
+                    # Lead existente — atualiza campos recebidos
+                    if "name" in raw:
+                        lead.name = raw["name"]
+                    if "status_id" in raw:
+                        lead.status_id = int(raw["status_id"])
+                    if "pipeline_id" in raw:
+                        lead.pipeline_id = int(raw["pipeline_id"])
+                    if "price" in raw:
+                        lead.price = int(raw["price"])
+
                 await _log(db, f"webhook:lead_{event}", "lead", lead_id, raw)
 
     # Contatos
