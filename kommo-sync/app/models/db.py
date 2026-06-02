@@ -106,6 +106,7 @@ class ExpansionField(Base):
     gestor              = Column(String(255))
     doctorid            = Column(String(50))
     pendencias          = Column(Text)
+    status_lead         = Column(String(255))
     observacoes         = Column(Text)
     updated_at          = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 

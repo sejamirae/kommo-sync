@@ -91,6 +91,7 @@ class FieldsIn(BaseModel):
     gestor: Optional[str] = None
     doctorid: Optional[str] = None
     pendencias: Optional[str] = None
+    status_lead: Optional[str] = None
     observacoes: Optional[str] = None
 
 
