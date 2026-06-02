@@ -314,10 +314,14 @@ async def get_kommo_notes(lead_id: int, db: AsyncSession = Depends(get_db)):
             headers={"Authorization": f"Bearer {access_token}"},
             params={"limit": 50, "order[id]": "asc"},
         )
-        if resp.status_code == 404:
+        if resp.status_code in (404, 204):
             return []
-        resp.raise_for_status()
-        data = resp.json()
+        if not resp.content:
+            return []
+        try:
+            data = resp.json()
+        except Exception:
+            return []
 
     type_map = {1:"ligacao",2:"email",3:"nota",10:"whatsapp",25:"whatsapp",102:"email"}
     result = []
