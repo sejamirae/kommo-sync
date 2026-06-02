@@ -157,6 +157,26 @@ async def _fetch_lead_from_kommo(lead_id: int, access_token: str) -> dict | None
     return None
 
 
+def _extract_items(data) -> list:
+    """
+    Normaliza estrutura de webhook da Kommo.
+    Pode vir como lista ou como dict com chaves numéricas {'0': {...}, '1': {...}}.
+    """
+    if not data:
+        return []
+    if isinstance(data, list):
+        return [i for i in data if isinstance(i, dict)]
+    if isinstance(data, dict):
+        # Chaves numéricas {'0': {id:...}, '1': {id:...}}
+        items = []
+        for k in sorted(data.keys(), key=lambda x: int(x) if x.isdigit() else 0):
+            v = data[k]
+            if isinstance(v, dict):
+                items.append(v)
+        return items
+    return []
+
+
 async def process_webhook_payload(payload: dict, db: AsyncSession):
     """
     Processa payload recebido via webhook da Kommo.
@@ -168,7 +188,7 @@ async def process_webhook_payload(payload: dict, db: AsyncSession):
 
     # Leads
     for event in ("add", "update", "status", "delete"):
-        for raw in payload.get("leads", {}).get(event, []):
+        for raw in _extract_items(payload.get("leads", {}).get(event)):
             lead_id = int(raw.get("id", 0))
             if not lead_id:
                 continue
@@ -211,7 +231,7 @@ async def process_webhook_payload(payload: dict, db: AsyncSession):
 
     # Contatos
     for event in ("add", "update", "delete"):
-        for raw in payload.get("contacts", {}).get(event, []):
+        for raw in _extract_items(payload.get("contacts", {}).get(event)):
             contact_id = int(raw.get("id", 0))
             if event == "delete":
                 result = await db.execute(select(Contact).where(Contact.id == contact_id))
