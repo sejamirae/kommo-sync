@@ -101,12 +101,11 @@ async def delete_lead(lead_id: int, db: AsyncSession = Depends(get_db)):
     settings = get_settings()
     access_token = await get_valid_token(db)
 
-    # Deleta na Kommo — usa query param conforme doc da API v4
+    # Deleta na Kommo — DELETE /api/v4/leads/{id}
     async with httpx.AsyncClient(timeout=15) as client:
         resp = await client.delete(
-            f"https://{settings.KOMMO_DOMAIN}/api/v4/leads",
+            f"https://{settings.KOMMO_DOMAIN}/api/v4/leads/{lead_id}",
             headers={"Authorization": f"Bearer {access_token}"},
-            params={"id[]": lead_id},
         )
         # 204 = deleted, 404 = não existe na Kommo (ok, remove do banco mesmo assim)
         kommo_ok = resp.status_code in (200, 204, 404)
