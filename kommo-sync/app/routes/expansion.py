@@ -18,6 +18,30 @@ BASE = f"https://{settings.KOMMO_DOMAIN}/api/v4"
 
 PIPELINE_ID = 13865228
 
+# IDs dos custom fields criados via setup-fields
+FIELD_IDS = {
+    "Nome Completo":      4330963,
+    "CRM":                4330965,
+    "Telefone Médico":    4330967,
+    "Unidade":            4330969,
+    "Dia da Semana":      4330971,
+    "Frequência":         4330973,
+    "Horário":            4330975,
+    "Nº de Horas":       4330977,
+    "Data Envio":         4330979,
+    "Data Fechamento":    4330981,
+    "Previsão Início":    4330983,
+    "Unidade Pagamento":  4330985,
+    "Valor Mirae":        4330987,
+    "Valor Médico":       4330989,
+    "Onboarding":         4330991,
+    "Origem":             4330993,
+    "Gestor":             4330995,
+    "DoctorID":           4330997,
+    "Pendências":         4330999,
+    "Observações":        4331001,
+}
+
 # Campos que queremos criar/manter na Kommo
 CUSTOM_FIELDS = [
     {"name": "Nome Completo",       "type": "text"},
@@ -149,7 +173,7 @@ async def get_fields(lead_id: int, db: AsyncSession = Depends(get_db)):
     return {c.name: getattr(row, c.name) for c in ExpansionField.__table__.columns if c.name != 'lead_id'}
 
 
-@router.post("/fields/{lead_id}", summary="Salva campos extras — banco + Kommo custom fields")
+@router.post("/fields/{lead_id}", summary="Salva campos extras — banco + Kommo custom fields + contato")
 async def save_fields(lead_id: int, body: FieldsIn, db: AsyncSession = Depends(get_db)):
     # 1. Salva no banco local
     result = await db.execute(select(ExpansionField).where(ExpansionField.lead_id == lead_id))
@@ -161,58 +185,95 @@ async def save_fields(lead_id: int, body: FieldsIn, db: AsyncSession = Depends(g
         setattr(row, field, val)
     await db.commit()
 
-    # 2. Atualiza custom fields na Kommo
     access_token = await get_valid_token(db)
-    async with httpx.AsyncClient() as client:
-        # Busca IDs dos campos
-        resp = await client.get(
-            f"{BASE}/leads/custom_fields",
-            headers={"Authorization": f"Bearer {access_token}"},
-            params={"filter[pipeline_id]": PIPELINE_ID},
-        )
-        field_map = {f["name"]: f["id"] for f in resp.json().get("_embedded", {}).get("custom_fields", [])};
+    headers = {"Authorization": f"Bearer {access_token}"}
+    data = body.model_dump(exclude_none=True)
 
-        def to_ts(date_str):
-            if not date_str: return None
-            try: return int(datetime.datetime.strptime(date_str, "%Y-%m-%d").timestamp())
-            except: return None
+    def to_ts(date_str):
+        if not date_str: return None
+        try: return int(datetime.datetime.strptime(date_str, "%Y-%m-%d").timestamp())
+        except: return None
 
-        data = body.model_dump(exclude_none=True)
-        name_to_field = {
-            "Nome Completo": data.get("nome_completo"),
-            "CRM": data.get("crm"),
-            "Telefone Médico": data.get("telefone"),
-            "Unidade": data.get("unidade"),
-            "Dia da Semana": data.get("dia_semana"),
-            "Frequência": data.get("frequencia"),
-            "Horário": data.get("horario"),
-            "Nº de Horas": data.get("horas"),
-            "Data Envio": to_ts(data.get("data_envio")),
-            "Data Fechamento": to_ts(data.get("data_fechamento")),
-            "Previsão Início": to_ts(data.get("previsao_inicio")),
+    async with httpx.AsyncClient(timeout=30) as client:
+        # 2. Atualiza custom fields do lead usando IDs fixos
+        name_to_val = {
+            "Nome Completo":     data.get("nome_completo"),
+            "CRM":               data.get("crm"),
+            "Telefone Médico":   data.get("telefone"),
+            "Unidade":           data.get("unidade"),
+            "Dia da Semana":     data.get("dia_semana"),
+            "Frequência":        data.get("frequencia"),
+            "Horário":           data.get("horario"),
+            "Nº de Horas":      data.get("horas"),
+            "Data Envio":        to_ts(data.get("data_envio")),
+            "Data Fechamento":   to_ts(data.get("data_fechamento")),
+            "Previsão Início":   to_ts(data.get("previsao_inicio")),
             "Unidade Pagamento": data.get("unidade_pagamento"),
-            "Valor Mirae": data.get("valor_mirae"),
-            "Valor Médico": data.get("valor_medico"),
-            "Onboarding": data.get("onboarding"),
-            "Origem": data.get("origem"),
-            "Gestor": data.get("gestor"),
-            "DoctorID": data.get("doctorid"),
-            "Pendências": data.get("pendencias"),
-            "Observações": data.get("observacoes"),
+            "Valor Mirae":       data.get("valor_mirae"),
+            "Valor Médico":      data.get("valor_medico"),
+            "Onboarding":        data.get("onboarding"),
+            "Origem":            data.get("origem"),
+            "Gestor":            data.get("gestor"),
+            "DoctorID":          data.get("doctorid"),
+            "Pendências":        data.get("pendencias"),
+            "Observações":       data.get("observacoes"),
         }
+        cfv = [
+            {"field_id": FIELD_IDS[fname], "values": [{"value": fval}]}
+            for fname, fval in name_to_val.items()
+            if fval is not None and fval != "" and fname in FIELD_IDS
+        ]
+        if cfv:
+            await client.patch(f"{BASE}/leads", headers=headers,
+                               json=[{"id": lead_id, "custom_fields_values": cfv}])
 
-        custom_fields_values = []
-        for fname, fval in name_to_field.items():
-            fid = field_map.get(fname)
-            if fid and fval is not None and fval != "":
-                custom_fields_values.append({"field_id": fid, "values": [{"value": fval}]})
+        # 3. Cria/atualiza contato e vincula ao lead
+        nome = data.get("nome_completo", "")
+        telefone = data.get("telefone", "")
+        crm = data.get("crm", "")
 
-        if custom_fields_values:
-            await client.patch(
-                f"{BASE}/leads",
-                headers={"Authorization": f"Bearer {access_token}"},
-                json=[{"id": lead_id, "custom_fields_values": custom_fields_values}],
-            )
+        if nome:
+            # Busca contato existente pelo nome
+            r = await client.get(f"{BASE}/contacts", headers=headers,
+                                 params={"query": nome, "limit": 5})
+            contacts = r.json().get("_embedded", {}).get("contacts", []) if r.status_code == 200 else []
+            contact_id = None
+
+            # Verifica se o lead já tem contato vinculado
+            r_lead = await client.get(f"{BASE}/leads/{lead_id}", headers=headers,
+                                      params={"with": "contacts"})
+            if r_lead.status_code == 200:
+                linked = r_lead.json().get("_embedded", {}).get("contacts", [])
+                if linked:
+                    contact_id = linked[0]["id"]
+
+            contact_payload = {"name": nome}
+            custom_contact = []
+
+            # Busca IDs dos campos do contato para CRM e Tel. comercial
+            # Tel. comercial usa field_code PHONE, CRM é custom
+            if telefone:
+                contact_payload["custom_fields_values"] = [
+                    {"field_code": "PHONE", "values": [{"value": telefone, "enum_code": "WORK"}]}
+                ]
+
+            if contact_id:
+                # Atualiza contato existente
+                await client.patch(f"{BASE}/contacts", headers=headers,
+                                   json=[{"id": contact_id, **contact_payload}])
+            else:
+                # Cria novo contato
+                rc = await client.post(f"{BASE}/contacts", headers=headers,
+                                       json=[contact_payload])
+                if rc.status_code in (200, 201):
+                    new_contacts = rc.json().get("_embedded", {}).get("contacts", [])
+                    if new_contacts:
+                        contact_id = new_contacts[0]["id"]
+
+            # Vincula contato ao lead
+            if contact_id:
+                await client.post(f"{BASE}/leads/{lead_id}/links", headers=headers,
+                                  json=[{"to_entity_id": contact_id, "to_entity_type": "contacts"}])
 
     return {"ok": True}
 
