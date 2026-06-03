@@ -220,43 +220,32 @@ async def process_webhook_payload(payload: dict, db: AsyncSession):
                 if lead and lead.pipeline_id == EXPANSAO_PIPELINE_ID:
                     await db.delete(lead)
             else:
-                # Verifica pipeline_id no webhook
-                pipeline_id_raw = int(raw.get("pipeline_id", 0))
-
-                # Se veio pipeline_id e não é Expansão, ignora
-                if pipeline_id_raw and pipeline_id_raw != EXPANSAO_PIPELINE_ID:
-                    continue
-
+                # SEMPRE verifica se o lead é do pipeline Expansão
+                # Primeiro checa se já existe no banco
                 result = await db.execute(select(Lead).where(Lead.id == lead_id))
                 lead = result.scalar_one_or_none()
 
-                if not lead and not pipeline_id_raw:
-                    # Sem pipeline_id no webhook — busca na Kommo para verificar
-                    full_data = await _fetch_lead_from_kommo(lead_id, access_token)
-                    if full_data and full_data.get("pipeline_id") != EXPANSAO_PIPELINE_ID:
-                        continue  # Não é do pipeline Expansão
-                    if full_data:
-                        await upsert_lead_from_raw(full_data, db)
-                    continue
-
-                if not lead and pipeline_id_raw == EXPANSAO_PIPELINE_ID:
-                    # Lead novo do pipeline Expansão
-                    full_data = await _fetch_lead_from_kommo(lead_id, access_token)
-                    if full_data:
-                        await upsert_lead_from_raw(full_data, db)
-                    else:
-                        lead = Lead(id=lead_id)
-                        db.add(lead)
-                        lead.status_id = int(raw.get("status_id", 0))
-                        lead.pipeline_id = EXPANSAO_PIPELINE_ID
-                elif lead:
-                    # Atualiza lead existente
-                    if "name" in raw:
-                        lead.name = raw["name"]
+                if lead:
+                    # Lead já existe — só atualiza se for do pipeline Expansão
+                    if lead.pipeline_id != EXPANSAO_PIPELINE_ID:
+                        continue
+                    pipeline_id_raw = int(raw.get("pipeline_id", 0))
+                    if pipeline_id_raw and pipeline_id_raw != EXPANSAO_PIPELINE_ID:
+                        # Foi movido para outro pipeline — remove do banco
+                        await db.delete(lead)
+                        continue
                     if "status_id" in raw:
                         lead.status_id = int(raw["status_id"])
-                    if "pipeline_id" in raw:
-                        lead.pipeline_id = int(raw["pipeline_id"])
+                    if "name" in raw:
+                        lead.name = raw["name"]
+                else:
+                    # Lead novo — busca na Kommo para verificar pipeline
+                    full_data = await _fetch_lead_from_kommo(lead_id, access_token)
+                    if not full_data:
+                        continue
+                    if int(full_data.get("pipeline_id", 0)) != EXPANSAO_PIPELINE_ID:
+                        continue  # Não é do pipeline Expansão, ignora
+                    await upsert_lead_from_raw(full_data, db)
 
     # Contatos — não salvamos contatos de outros pipelines
     # Os contatos do pipeline Expansão são criados diretamente no import-batch
