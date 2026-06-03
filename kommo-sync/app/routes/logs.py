@@ -29,19 +29,21 @@ async def list_logs(db: AsyncSession = Depends(get_db)):
     ]
 
 @router.delete("/cleanup", summary="Limpa logs antigos para liberar espaço no disco")
+@router.get("/cleanup-now", summary="Limpa logs via GET (use no browser)")
 async def cleanup_logs(db: AsyncSession = Depends(get_db)):
     from sqlalchemy import text
     results = {}
-    
-    # Apaga todos os sync_log
-    r1 = await db.execute(text("DELETE FROM sync_log"))
-    results["sync_log_deleted"] = r1.rowcount
-    
-    # Apaga notas de status antigas (mais de 30 dias)
-    r2 = await db.execute(text(
-        "DELETE FROM expansion_notes WHERE type=\'status\' AND created_at < NOW() - INTERVAL \'30 days\'"
-    ))
-    results["old_status_notes_deleted"] = r2.rowcount
-
-    await db.commit()
+    try:
+        r1 = await db.execute(text("DELETE FROM sync_log"))
+        results["sync_log_deleted"] = r1.rowcount
+        await db.commit()
+    except Exception as e:
+        await db.rollback()
+        # Disco cheio - tenta truncate que usa menos espaço
+        try:
+            await db.execute(text("TRUNCATE TABLE sync_log"))
+            await db.commit()
+            results["sync_log_truncated"] = True
+        except Exception as e2:
+            results["error"] = str(e2)
     return results
