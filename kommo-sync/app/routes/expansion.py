@@ -155,6 +155,19 @@ async def setup_custom_fields(db: AsyncSession = Depends(get_db)):
     return {"created": created, "skipped": skipped, "errors": errors}
 
 
+@router.get("/contact-fields", summary="Lista campos padrão dos contatos na Kommo")
+async def get_contact_fields(db: AsyncSession = Depends(get_db)):
+    from app.services.kommo import get_valid_token
+    import httpx as _httpx
+    access_token = await get_valid_token(db)
+    async with _httpx.AsyncClient(timeout=15) as client:
+        resp = await client.get(
+            f"{BASE}/contacts/custom_fields",
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        return resp.json()
+
+
 @router.get("/field-ids", summary="Retorna IDs dos custom fields do pipeline Expansão")
 async def get_field_ids(db: AsyncSession = Depends(get_db)):
     access_token = await get_valid_token(db)
