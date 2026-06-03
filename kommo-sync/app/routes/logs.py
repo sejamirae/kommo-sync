@@ -34,10 +34,7 @@ async def cleanup_logs(db: AsyncSession = Depends(get_db)):
     from sqlalchemy import text
     results = {}
     try:
-        await db.execute(text("TRUNCATE TABLE sync_log"))
-        await db.execute(text("TRUNCATE TABLE contact_phones"))
-        await db.execute(text("TRUNCATE TABLE contact_emails"))
-        await db.execute(text("TRUNCATE TABLE contacts"))
+        await db.execute(text("TRUNCATE TABLE sync_log, contact_phones, contact_emails, contacts CASCADE"))
         await db.commit()
         results["truncated"] = ["sync_log", "contact_phones", "contact_emails", "contacts"]
     except Exception as e:
