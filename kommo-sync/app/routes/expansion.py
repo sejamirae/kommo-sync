@@ -429,16 +429,22 @@ async def import_batch(leads_data: list[dict], db: AsyncSession = Depends(get_db
                 lead_id = lead_raw["id"]
                 created_ids.append(lead_id)
 
-                # Upsert lead no banco
-                existing = await db.execute(select(Lead).where(Lead.id == lead_id))
-                lead_obj = existing.scalar_one_or_none()
-                if not lead_obj:
-                    lead_obj = Lead(id=lead_id)
-                    db.add(lead_obj)
-                lead_obj.name = lead_raw.get("name")
-                lead_obj.status_id = lead_raw.get("status_id")
-                lead_obj.pipeline_id = lead_raw.get("pipeline_id")
-                lead_obj.price = lead_raw.get("price", 0)
+                # Upsert lead no banco - ignora se já existe (webhook pode ter chegado primeiro)
+                from sqlalchemy import text as _text
+                await db.execute(_text("""
+                    INSERT INTO leads (id, name, status_id, pipeline_id, price)
+                    VALUES (:id, :name, :status_id, :pipeline_id, :price)
+                    ON CONFLICT (id) DO UPDATE SET
+                        name = EXCLUDED.name,
+                        status_id = EXCLUDED.status_id,
+                        pipeline_id = EXCLUDED.pipeline_id
+                """), {
+                    "id": lead_id,
+                    "name": lead_raw.get("name"),
+                    "status_id": lead_raw.get("status_id"),
+                    "pipeline_id": lead_raw.get("pipeline_id"),
+                    "price": lead_raw.get("price", 0),
+                })
 
                 # Salva campos extras
                 if idx2 < len(batch):
