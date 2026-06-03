@@ -409,12 +409,25 @@ async def import_batch(leads_data: list[dict], db: AsyncSession = Depends(get_db
     async with _httpx.AsyncClient(timeout=60) as client:
         for i in range(0, len(leads_data), batch_size):
             batch = leads_data[i:i+batch_size]
-            payload = [
-                {"name": l.get("nome_completo") or l.get("name", "Lead"),
-                 "status_id": STATUS_ID_BATCH,
-                 "pipeline_id": PIPELINE_ID_BATCH, "price": 0}
-                for l in batch
-            ]
+            payload = []
+            for l in batch:
+                lead_data = {
+                    "name": l.get("nome_completo") or l.get("name", "Lead"),
+                    "status_id": STATUS_ID_BATCH,
+                    "pipeline_id": PIPELINE_ID_BATCH,
+                    "price": 0,
+                }
+                # Embed contact with phone directly in lead creation
+                telefone = l.get("telefone", "")
+                nome = l.get("nome_completo", "")
+                if telefone or nome:
+                    contact = {"name": nome or "Médico"}
+                    if telefone:
+                        contact["custom_fields_values"] = [
+                            {"field_id": 3058666, "values": [{"value": str(telefone), "enum_id": 7088034}]}
+                        ]
+                    lead_data["_embedded"] = {"contacts": [contact]}
+                payload.append(lead_data)
             resp = await client.post(
                 f"{BASE}/leads",
                 headers=headers_kommo,
@@ -486,29 +499,7 @@ async def import_batch(leads_data: list[dict], db: AsyncSession = Depends(get_db
                             json=[{"id": lead_id, "custom_fields_values": cfv}],
                         )
 
-                    # Cria contato com telefone
-                    telefone = extra.get("telefone", "")
-                    nome = extra.get("nome_completo", "")
-                    if telefone or nome:
-                        contact_payload = {"name": nome or "Médico"}
-                        if telefone:
-                            contact_payload["custom_fields_values"] = [
-                                {"field_id": 3058666, "values": [{"value": str(telefone), "enum_id": 7088034}]}
-                            ]
-                        import logging
-                        logging.warning(f"Creating contact: {contact_payload}")
-                        rc = await client.post(f"{BASE}/contacts", headers=headers_kommo, json=[contact_payload])
-                        logging.warning(f"Contact response: {rc.status_code} {rc.text[:300]}")
-                        if rc.status_code in (200, 201):
-                            new_contacts = rc.json().get("_embedded", {}).get("contacts", [])
-                            if new_contacts:
-                                cid = new_contacts[0]["id"]
-                                link_resp = await client.post(
-                                    f"{BASE}/contacts/{cid}/links",
-                                    headers=headers_kommo,
-                                    json=[{"to_entity_id": lead_id, "to_entity_type": "leads"}],
-                                )
-                                logging.warning(f"Link response: {link_resp.status_code} {link_resp.text[:200]}")
+                    # Contato já foi criado e vinculado no payload do lead acima
 
             try:
                 await db.commit()
