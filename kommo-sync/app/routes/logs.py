@@ -34,33 +34,15 @@ async def cleanup_logs(db: AsyncSession = Depends(get_db)):
     from sqlalchemy import text
     results = {}
     try:
-        r1 = await db.execute(text("DELETE FROM sync_log"))
-        results["sync_log_deleted"] = r1.rowcount
-        # Limpa contatos de outros pipelines (não são necessários)
-        r2 = await db.execute(text("""
-            DELETE FROM contact_phones WHERE contact_id NOT IN (
-                SELECT DISTINCT contact_id FROM leads l
-                JOIN contacts c ON c.id = l.responsible_user_id
-                WHERE l.pipeline_id = 13865228
-            )
-        """))
-        results["contact_phones_deleted"] = r2.rowcount
-        r3 = await db.execute(text("""
-            DELETE FROM contacts WHERE id NOT IN (
-                SELECT DISTINCT responsible_user_id FROM leads WHERE pipeline_id = 13865228
-            )
-        """))
-        results["contacts_deleted"] = r3.rowcount
+        await db.execute(text("TRUNCATE TABLE sync_log"))
+        await db.execute(text("TRUNCATE TABLE contact_phones"))
+        await db.execute(text("TRUNCATE TABLE contact_emails"))
+        await db.execute(text("TRUNCATE TABLE contacts"))
         await db.commit()
+        results["truncated"] = ["sync_log", "contact_phones", "contact_emails", "contacts"]
     except Exception as e:
         await db.rollback()
-        try:
-            await db.execute(text("TRUNCATE TABLE sync_log"))
-            await db.execute(text("TRUNCATE TABLE contact_phones"))
-            await db.commit()
-            results["truncated"] = True
-        except Exception as e2:
-            results["error"] = str(e2)
+        results["error"] = str(e)
     return results
 
 @router.get("/db-size", summary="Tamanho de cada tabela no banco")
