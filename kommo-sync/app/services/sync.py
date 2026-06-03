@@ -258,17 +258,7 @@ async def process_webhook_payload(payload: dict, db: AsyncSession):
                     if "pipeline_id" in raw:
                         lead.pipeline_id = int(raw["pipeline_id"])
 
-    # Contatos
-    for event in ("add", "update", "delete"):
-        for raw in _extract_items(payload.get("contacts", {}).get(event)):
-            contact_id = int(raw.get("id", 0))
-            if event == "delete":
-                result = await db.execute(select(Contact).where(Contact.id == contact_id))
-                contact = result.scalar_one_or_none()
-                if contact:
-                    await db.delete(contact)
-            else:
-                await upsert_contact_from_raw(raw, db)
-            await _log(db, f"webhook:contact_{event}", "contact", contact_id, raw)
+    # Contatos — não salvamos contatos de outros pipelines
+    # Os contatos do pipeline Expansão são criados diretamente no import-batch
 
     await db.commit()
