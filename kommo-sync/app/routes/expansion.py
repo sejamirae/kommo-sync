@@ -393,6 +393,7 @@ async def import_batch(leads_data: list[dict], db: AsyncSession = Depends(get_db
     from app.services.kommo import get_valid_token
     from app.models.db import Lead
     import httpx as _httpx
+    import logging
 
     access_token = await get_valid_token(db)
     headers_kommo = {"Authorization": f"Bearer {access_token}"}
@@ -404,45 +405,62 @@ async def import_batch(leads_data: list[dict], db: AsyncSession = Depends(get_db
 
     created_ids = []
     errors = []
-    batch_size = 50
 
     async with _httpx.AsyncClient(timeout=60) as client:
-        for i in range(0, len(leads_data), batch_size):
-            batch = leads_data[i:i+batch_size]
-            payload = []
-            for l in batch:
-                lead_data = {
-                    "name": l.get("nome_completo") or l.get("name", "Lead"),
+        for extra in leads_data:
+            try:
+                telefone = str(extra.get("telefone", "")).strip()
+                nome = str(extra.get("nome_completo", "")).strip()
+                
+                # Monta contato com telefone
+                contact = {"name": nome or "Médico"}
+                if telefone:
+                    contact["custom_fields_values"] = [
+                        {"field_id": 3058666, "values": [{"value": telefone, "enum_id": 7088034}]}
+                    ]
+
+                # Cria lead + contato via /leads/complex
+                payload = [{
+                    "name": extra.get("name") or nome or "Lead",
                     "status_id": STATUS_ID_BATCH,
                     "pipeline_id": PIPELINE_ID_BATCH,
                     "price": 0,
-                }
-                # Embed contact with phone directly in lead creation
-                telefone = l.get("telefone", "")
-                nome = l.get("nome_completo", "")
-                if telefone or nome:
-                    contact = {"name": nome or "Médico"}
-                    if telefone:
-                        contact["custom_fields_values"] = [
-                            {"field_id": 3058666, "values": [{"value": str(telefone), "enum_id": 7088034}]}
-                        ]
-                    lead_data["_embedded"] = {"contacts": [contact]}
-                payload.append(lead_data)
-            resp = await client.post(
-                f"{BASE}/leads",
-                headers=headers_kommo,
-                json=payload,
-            )
-            if resp.status_code not in (200, 201):
-                errors.append(f"Batch {i//batch_size+1}: HTTP {resp.status_code} {resp.text[:100]}")
-                continue
+                    "_embedded": {"contacts": [contact]}
+                }]
 
-            new_leads = resp.json().get("_embedded", {}).get("leads", [])
-            for idx2, lead_raw in enumerate(new_leads):
-                lead_id = lead_raw["id"]
+                resp = await client.post(
+                    f"{BASE}/leads/complex",
+                    headers=headers_kommo,
+                    json=payload,
+                )
+                
+                if resp.status_code not in (200, 201):
+                    # Fallback: cria lead simples sem contato
+                    logging.warning(f"Complex failed ({resp.status_code}), trying simple: {resp.text[:100]}")
+                    resp = await client.post(
+                        f"{BASE}/leads",
+                        headers=headers_kommo,
+                        json=[{
+                            "name": extra.get("name") or nome or "Lead",
+                            "status_id": STATUS_ID_BATCH,
+                            "pipeline_id": PIPELINE_ID_BATCH,
+                            "price": 0,
+                        }],
+                    )
+
+                if resp.status_code not in (200, 201):
+                    errors.append(f"Lead {nome}: HTTP {resp.status_code}")
+                    continue
+
+                new_leads = resp.json().get("_embedded", {}).get("leads", [])
+                if not new_leads:
+                    errors.append(f"Lead {nome}: no leads in response")
+                    continue
+
+                lead_id = new_leads[0]["id"]
                 created_ids.append(lead_id)
 
-                # Upsert lead no banco - ignora se já existe (webhook pode ter chegado primeiro)
+                # Upsert no banco
                 from sqlalchemy import text as _text
                 await db.execute(_text("""
                     INSERT INTO leads (id, name, status_id, pipeline_id, price)
@@ -453,62 +471,56 @@ async def import_batch(leads_data: list[dict], db: AsyncSession = Depends(get_db
                         pipeline_id = EXCLUDED.pipeline_id
                 """), {
                     "id": lead_id,
-                    "name": lead_raw.get("name"),
-                    "status_id": lead_raw.get("status_id"),
-                    "pipeline_id": lead_raw.get("pipeline_id"),
-                    "price": lead_raw.get("price", 0),
+                    "name": extra.get("name") or nome or "Lead",
+                    "status_id": STATUS_ID_BATCH,
+                    "pipeline_id": PIPELINE_ID_BATCH,
+                    "price": 0,
                 })
 
-                # Salva campos extras
-                if idx2 < len(batch):
-                    extra = batch[idx2]
-                    row_ef = await db.execute(
-                        select(ExpansionField).where(ExpansionField.lead_id == lead_id)
-                    )
-                    ef = row_ef.scalar_one_or_none()
-                    if not ef:
-                        ef = ExpansionField(lead_id=lead_id)
-                        db.add(ef)
-                    for field in ['nome_completo','crm','telefone','cliente','especialidade',
-                                 'unidade','dia_semana','frequencia','horario','horas',
-                                 'unidade_pagamento','valor_mirae','valor_medico','onboarding',
-                                 'origem','gestor','doctorid','status_lead','previsao_inicio']:
-                        val = extra.get(field)
-                        if val is not None and str(val).strip():
-                            setattr(ef, field, str(val).strip())
+                # Salva campos extras no banco
+                row_ef = await db.execute(
+                    select(ExpansionField).where(ExpansionField.lead_id == lead_id)
+                )
+                ef = row_ef.scalar_one_or_none()
+                if not ef:
+                    ef = ExpansionField(lead_id=lead_id)
+                    db.add(ef)
+                for field in ['nome_completo','crm','telefone','cliente','especialidade',
+                             'unidade','dia_semana','frequencia','horario','horas',
+                             'unidade_pagamento','valor_mirae','valor_medico','onboarding',
+                             'origem','gestor','doctorid','status_lead','previsao_inicio']:
+                    val = extra.get(field)
+                    if val is not None and str(val).strip():
+                        setattr(ef, field, str(val).strip())
 
-                    # Atualiza custom fields na Kommo
-                    cfv = []
-                    field_map = {
-                        'nome_completo': 4330963, 'crm': 4330965, 'telefone': 4330967,
-                        'unidade': 4330969, 'dia_semana': 4330971, 'frequencia': 4330973,
-                        'horario': 4330975, 'horas': 4330977, 'unidade_pagamento': 4330985,
-                        'valor_mirae': 4330987, 'valor_medico': 4330989, 'onboarding': 4330991,
-                        'origem': 4330993, 'gestor': 4330995, 'doctorid': 4330997,
-                        # Novos campos — IDs serão preenchidos após setup-fields
-                        # 'cliente': ID_CLIENTE, 'especialidade': ID_ESPECIALIDADE,
-                    }
-                    for fname, fid in field_map.items():
-                        v = extra.get(fname)
-                        if v and str(v).strip():
-                            cfv.append({"field_id": fid, "values": [{"value": str(v).strip()}]})
-                    if cfv:
-                        import logging
-                        r_cfv = await client.patch(
-                            f"{BASE}/leads",
-                            headers=headers_kommo,
-                            json=[{"id": lead_id, "custom_fields_values": cfv}],
-                        )
-                        if r_cfv.status_code not in (200, 201):
-                            logging.warning(f"CFV error lead {lead_id}: {r_cfv.status_code} {r_cfv.text[:200]}")
-
-                    # Contato já foi criado e vinculado no payload do lead acima
-
-            try:
                 await db.commit()
+
+                # Salva custom fields na Kommo
+                field_map = {
+                    'nome_completo': 4330963, 'crm': 4330965, 'telefone': 4330967,
+                    'unidade': 4330969, 'dia_semana': 4330971, 'frequencia': 4330973,
+                    'horario': 4330975, 'horas': 4330977, 'unidade_pagamento': 4330985,
+                    'valor_mirae': 4330987, 'valor_medico': 4330989, 'onboarding': 4330991,
+                    'origem': 4330993, 'gestor': 4330995, 'doctorid': 4330997,
+                }
+                cfv = [
+                    {"field_id": fid, "values": [{"value": str(extra[fname]).strip()}]}
+                    for fname, fid in field_map.items()
+                    if extra.get(fname) and str(extra[fname]).strip()
+                ]
+                if cfv:
+                    await client.patch(
+                        f"{BASE}/leads",
+                        headers=headers_kommo,
+                        json=[{"id": lead_id, "custom_fields_values": cfv}],
+                    )
+
             except Exception as ex:
-                await db.rollback()
-                errors.append(f"DB commit error batch {i//batch_size+1}: {str(ex)[:100]}")
+                errors.append(f"Lead {extra.get('nome_completo','?')}: {str(ex)[:100]}")
+                try:
+                    await db.rollback()
+                except:
+                    pass
 
     return {"created": len(created_ids), "errors": errors}
 
@@ -583,3 +595,35 @@ async def fix_contacts(db: AsyncSession = Depends(get_db)):
                 errors.append(f"lead {ef.lead_id}: {str(ex)[:80]}")
 
     return {"fixed": fixed, "errors": errors}
+
+@router.post("/test-contact-link", summary="Testa criação de lead com contato vinculado")
+async def test_contact_link(db: AsyncSession = Depends(get_db)):
+    """Cria 1 lead de teste e tenta vincular contato — retorna resposta completa da Kommo."""
+    from app.services.kommo import get_valid_token
+    import httpx as _httpx
+    import logging
+
+    access_token = await get_valid_token(db)
+    headers = {"Authorization": f"Bearer {access_token}"}
+    results = {}
+
+    async with _httpx.AsyncClient(timeout=15) as client:
+        # Método 1: /leads/complex
+        payload_complex = [{
+            "name": "TESTE CONTATO VINCULADO",
+            "status_id": 107011876,
+            "pipeline_id": 13865228,
+            "price": 0,
+            "_embedded": {
+                "contacts": [{
+                    "name": "DR TESTE",
+                    "custom_fields_values": [
+                        {"field_id": 3058666, "values": [{"value": "(11) 99999-0000", "enum_id": 7088034}]}
+                    ]
+                }]
+            }
+        }]
+        r1 = await client.post(f"{BASE}/leads/complex", headers=headers, json=payload_complex)
+        results["complex"] = {"status": r1.status_code, "body": r1.text[:500]}
+
+    return results
