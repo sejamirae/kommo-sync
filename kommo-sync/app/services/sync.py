@@ -22,11 +22,14 @@ def _parse_dt(ts: int | None) -> datetime | None:
 
 async def _log(db: AsyncSession, event_type: str, entity_type: str,
                entity_id: int, payload: dict, status: str = "ok", message: str = ""):
+    # Skip logging sync events to save disk space (only log errors and webhooks)
+    if event_type.startswith("sync:") and status == "ok":
+        return
     db.add(SyncLog(
         event_type=event_type,
         entity_type=entity_type,
         entity_id=entity_id,
-        payload=json.dumps(payload, ensure_ascii=False),
+        payload="",  # Don't store payload to save space
         status=status,
         message=message,
     ))
