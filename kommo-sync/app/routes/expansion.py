@@ -489,16 +489,20 @@ async def import_batch(leads_data: list[dict], db: AsyncSession = Depends(get_db
                             contact_payload["custom_fields_values"] = [
                                 {"field_id": 3058666, "values": [{"value": str(telefone), "enum_id": 7088034}]}
                             ]
+                        import logging
+                        logging.warning(f"Creating contact: {contact_payload}")
                         rc = await client.post(f"{BASE}/contacts", headers=headers_kommo, json=[contact_payload])
+                        logging.warning(f"Contact response: {rc.status_code} {rc.text[:300]}")
                         if rc.status_code in (200, 201):
                             new_contacts = rc.json().get("_embedded", {}).get("contacts", [])
                             if new_contacts:
                                 cid = new_contacts[0]["id"]
-                                await client.post(
+                                link_resp = await client.post(
                                     f"{BASE}/leads/{lead_id}/links",
                                     headers=headers_kommo,
                                     json=[{"to_entity_id": cid, "to_entity_type": "contacts"}],
                                 )
+                                logging.warning(f"Link response: {link_resp.status_code} {link_resp.text[:200]}")
 
             try:
                 await db.commit()
