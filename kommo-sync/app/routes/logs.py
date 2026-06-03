@@ -47,3 +47,17 @@ async def cleanup_logs(db: AsyncSession = Depends(get_db)):
         except Exception as e2:
             results["error"] = str(e2)
     return results
+
+@router.get("/db-size", summary="Tamanho de cada tabela no banco")
+async def db_size(db: AsyncSession = Depends(get_db)):
+    from sqlalchemy import text
+    result = await db.execute(text("""
+        SELECT 
+            relname as tabela,
+            pg_size_pretty(pg_total_relation_size(relid)) as tamanho,
+            pg_total_relation_size(relid) as bytes
+        FROM pg_catalog.pg_statio_user_tables
+        ORDER BY pg_total_relation_size(relid) DESC
+    """))
+    rows = result.fetchall()
+    return [{"tabela": r[0], "tamanho": r[1], "bytes": r[2]} for r in rows]
