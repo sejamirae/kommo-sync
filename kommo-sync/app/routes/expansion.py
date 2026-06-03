@@ -493,11 +493,14 @@ async def import_batch(leads_data: list[dict], db: AsyncSession = Depends(get_db
                         if v and str(v).strip():
                             cfv.append({"field_id": fid, "values": [{"value": str(v).strip()}]})
                     if cfv:
-                        await client.patch(
+                        import logging
+                        r_cfv = await client.patch(
                             f"{BASE}/leads",
                             headers=headers_kommo,
                             json=[{"id": lead_id, "custom_fields_values": cfv}],
                         )
+                        if r_cfv.status_code not in (200, 201):
+                            logging.warning(f"CFV error lead {lead_id}: {r_cfv.status_code} {r_cfv.text[:200]}")
 
                     # Contato já foi criado e vinculado no payload do lead acima
 
