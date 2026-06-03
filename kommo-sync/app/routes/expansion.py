@@ -269,7 +269,7 @@ async def save_fields(lead_id: int, body: FieldsIn, db: AsyncSession = Depends(g
             contact_payload = {"name": nome or "Médico"}
             if telefone:
                 contact_payload["custom_fields_values"] = [
-                    {"field_code": "PHONE", "values": [{"value": telefone, "enum_code": "WORK"}]}
+                    {"field_code": "PHONE", "values": [{"value": telefone}]}
                 ]
 
             if contact_id:
@@ -397,7 +397,8 @@ async def import_batch(leads_data: list[dict], db: AsyncSession = Depends(get_db
         for i in range(0, len(leads_data), batch_size):
             batch = leads_data[i:i+batch_size]
             payload = [
-                {"name": l.get("name", "Lead"), "status_id": STATUS_ID_BATCH,
+                {"name": l.get("nome_completo") or l.get("name", "Lead"),
+                 "status_id": STATUS_ID_BATCH,
                  "pipeline_id": PIPELINE_ID_BATCH, "price": 0}
                 for l in batch
             ]
@@ -452,6 +453,8 @@ async def import_batch(leads_data: list[dict], db: AsyncSession = Depends(get_db
                         'horario': 4330975, 'horas': 4330977, 'unidade_pagamento': 4330985,
                         'valor_mirae': 4330987, 'valor_medico': 4330989, 'onboarding': 4330991,
                         'origem': 4330993, 'gestor': 4330995, 'doctorid': 4330997,
+                        # Novos campos — IDs serão preenchidos após setup-fields
+                        # 'cliente': ID_CLIENTE, 'especialidade': ID_ESPECIALIDADE,
                     }
                     for fname, fid in field_map.items():
                         v = extra.get(fname)
@@ -471,7 +474,7 @@ async def import_batch(leads_data: list[dict], db: AsyncSession = Depends(get_db
                         contact_payload = {"name": nome or "Médico"}
                         if telefone:
                             contact_payload["custom_fields_values"] = [
-                                {"field_code": "PHONE", "values": [{"value": str(telefone), "enum_code": "WORK"}]}
+                                {"field_code": "PHONE", "values": [{"value": str(telefone)}]}
                             ]
                         rc = await client.post(f"{BASE}/contacts", headers=headers_kommo, json=[contact_payload])
                         if rc.status_code in (200, 201):
@@ -531,7 +534,7 @@ async def fix_contacts(db: AsyncSession = Depends(get_db)):
                 contact_payload = {"name": ef.nome_completo or "Médico"}
                 if ef.telefone:
                     contact_payload["custom_fields_values"] = [
-                        {"field_code": "PHONE", "values": [{"value": ef.telefone, "enum_code": "WORK"}]}
+                        {"field_code": "PHONE", "values": [{"value": ef.telefone}]}
                     ]
 
                 if linked:
