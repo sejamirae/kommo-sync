@@ -388,99 +388,83 @@ async def get_expansion_stages(pipeline_id: int, db: AsyncSession = Depends(get_
     return {"pipeline_id": pipeline_id, "pipeline_name": data.get("name"),
             "stages": [{"id": s["id"], "name": s["name"]} for s in stages]}
 
-@router.post("/import-batch", summary="Importa múltiplos leads de uma vez (mais rápido)")
+@router.post("/import-batch", summary="Importa múltiplos leads em lote")
 async def import_batch(leads_data: list[dict], db: AsyncSession = Depends(get_db)):
     from app.services.kommo import get_valid_token
-    from app.models.db import Lead
     import httpx as _httpx
-    import logging
+    from sqlalchemy import text as _text
 
     access_token = await get_valid_token(db)
-    headers_kommo = {"Authorization": f"Bearer {access_token}"}
+    H = {"Authorization": f"Bearer {access_token}"}
     PIPELINE_ID_BATCH = 13865228
     STATUS_ID_BATCH = 107011876
+    FIELD_MAP = {
+        'nome_completo': 4330963, 'crm': 4330965, 'telefone': 4330967,
+        'unidade': 4330969, 'dia_semana': 4330971, 'frequencia': 4330973,
+        'horario': 4330975, 'horas': 4330977, 'unidade_pagamento': 4330985,
+        'valor_mirae': 4330987, 'valor_medico': 4330989, 'onboarding': 4330991,
+        'origem': 4330993, 'gestor': 4330995, 'doctorid': 4330997,
+    }
 
     if not leads_data:
         return {"created": 0, "errors": []}
 
     created_ids = []
     errors = []
+    BATCH = 50
 
     async with _httpx.AsyncClient(timeout=60) as client:
-        for extra in leads_data:
-            try:
-                telefone = str(extra.get("telefone", "")).strip()
-                nome = str(extra.get("nome_completo", "")).strip()
-                
-                # Monta contato com telefone
+        # PASSO 1: Cria todos os leads em lote via /leads/complex
+        for i in range(0, len(leads_data), BATCH):
+            batch = leads_data[i:i+BATCH]
+            payload = []
+            for l in batch:
+                nome = str(l.get("nome_completo", "")).strip()
+                telefone = str(l.get("telefone", "")).strip()
                 contact = {"name": nome or "Médico"}
                 if telefone:
                     contact["custom_fields_values"] = [
                         {"field_id": 3058666, "values": [{"value": telefone, "enum_id": 7088034}]}
                     ]
-
-                # Cria lead + contato via /leads/complex
-                payload = [{
-                    "name": extra.get("name") or nome or "Lead",
+                payload.append({
+                    "name": l.get("name") or nome or "Lead",
                     "status_id": STATUS_ID_BATCH,
                     "pipeline_id": PIPELINE_ID_BATCH,
                     "price": 0,
                     "_embedded": {"contacts": [contact]}
-                }]
+                })
 
-                resp = await client.post(
-                    f"{BASE}/leads/complex",
-                    headers=headers_kommo,
-                    json=payload,
-                )
-                
-                if resp.status_code not in (200, 201):
-                    # Fallback: cria lead simples sem contato
-                    logging.warning(f"Complex failed ({resp.status_code}), trying simple: {resp.text[:100]}")
-                    resp = await client.post(
-                        f"{BASE}/leads",
-                        headers=headers_kommo,
-                        json=[{
-                            "name": extra.get("name") or nome or "Lead",
-                            "status_id": STATUS_ID_BATCH,
-                            "pipeline_id": PIPELINE_ID_BATCH,
-                            "price": 0,
-                        }],
-                    )
+            resp = await client.post(f"{BASE}/leads/complex", headers=H, json=payload)
+            if resp.status_code not in (200, 201):
+                # Fallback sem contato
+                simple_payload = [{"name": l.get("name") or str(l.get("nome_completo","")).strip() or "Lead",
+                    "status_id": STATUS_ID_BATCH, "pipeline_id": PIPELINE_ID_BATCH, "price": 0}
+                    for l in batch]
+                resp = await client.post(f"{BASE}/leads", headers=H, json=simple_payload)
 
-                if resp.status_code not in (200, 201):
-                    errors.append(f"Lead {nome}: HTTP {resp.status_code}")
-                    continue
+            if resp.status_code not in (200, 201):
+                errors.append(f"Batch {i//BATCH+1}: HTTP {resp.status_code}")
+                continue
 
-                new_leads = resp.json().get("_embedded", {}).get("leads", [])
-                if not new_leads:
-                    errors.append(f"Lead {nome}: no leads in response")
-                    continue
+            new_leads = resp.json().get("_embedded", {}).get("leads", [])
+            for idx2, lead_raw in enumerate(new_leads):
+                lead_id = lead_raw["id"]
+                created_ids.append((lead_id, batch[idx2] if idx2 < len(batch) else {}))
 
-                lead_id = new_leads[0]["id"]
-                created_ids.append(lead_id)
-
-                # Upsert no banco
-                from sqlalchemy import text as _text
+        # PASSO 2: Salva campos no banco e na Kommo em lote
+        cfv_batch = []  # lista de patches para a Kommo
+        for lead_id, extra in created_ids:
+            # Banco local
+            try:
                 await db.execute(_text("""
                     INSERT INTO leads (id, name, status_id, pipeline_id, price)
                     VALUES (:id, :name, :status_id, :pipeline_id, :price)
-                    ON CONFLICT (id) DO UPDATE SET
-                        name = EXCLUDED.name,
-                        status_id = EXCLUDED.status_id,
-                        pipeline_id = EXCLUDED.pipeline_id
-                """), {
-                    "id": lead_id,
-                    "name": extra.get("name") or nome or "Lead",
-                    "status_id": STATUS_ID_BATCH,
-                    "pipeline_id": PIPELINE_ID_BATCH,
-                    "price": 0,
-                })
+                    ON CONFLICT (id) DO UPDATE SET name=EXCLUDED.name,
+                        status_id=EXCLUDED.status_id, pipeline_id=EXCLUDED.pipeline_id
+                """), {"id": lead_id, "name": extra.get("name") or str(extra.get("nome_completo","")).strip() or "Lead",
+                       "status_id": STATUS_ID_BATCH, "pipeline_id": PIPELINE_ID_BATCH, "price": 0})
 
-                # Salva campos extras no banco
-                row_ef = await db.execute(
-                    select(ExpansionField).where(ExpansionField.lead_id == lead_id)
-                )
+                row_ef = await db.execute(select(ExpansionField).where(ExpansionField.lead_id == lead_id))
                 ef = row_ef.scalar_one_or_none()
                 if not ef:
                     ef = ExpansionField(lead_id=lead_id)
@@ -492,40 +476,21 @@ async def import_batch(leads_data: list[dict], db: AsyncSession = Depends(get_db
                     val = extra.get(field)
                     if val is not None and str(val).strip():
                         setattr(ef, field, str(val).strip())
-
                 await db.commit()
-
-                # Salva custom fields na Kommo
-                field_map = {
-                    'nome_completo': 4330963, 'crm': 4330965, 'telefone': 4330967,
-                    'unidade': 4330969, 'dia_semana': 4330971, 'frequencia': 4330973,
-                    'horario': 4330975, 'horas': 4330977, 'unidade_pagamento': 4330985,
-                    'valor_mirae': 4330987, 'valor_medico': 4330989, 'onboarding': 4330991,
-                    'origem': 4330993, 'gestor': 4330995, 'doctorid': 4330997,
-                }
-                cfv = [
-                    {"field_id": fid, "values": [{"value": str(extra[fname]).strip()}]}
-                    for fname, fid in field_map.items()
-                    if extra.get(fname) and str(extra[fname]).strip()
-                ]
-                if cfv:
-                    import logging
-                    r_cfv = await client.patch(
-                        f"{BASE}/leads",
-                        headers=headers_kommo,
-                        json=[{"id": lead_id, "custom_fields_values": cfv}],
-                    )
-                    if r_cfv.status_code not in (200, 201):
-                        logging.warning(f"CFV patch failed: {r_cfv.status_code} {r_cfv.text[:300]}")
-                    else:
-                        logging.warning(f"CFV patch ok: {r_cfv.status_code}")
-
             except Exception as ex:
-                errors.append(f"Lead {extra.get('nome_completo','?')}: {str(ex)[:100]}")
-                try:
-                    await db.rollback()
-                except:
-                    pass
+                await db.rollback()
+                errors.append(f"DB {lead_id}: {str(ex)[:80]}")
+
+            # Custom fields para Kommo
+            cfv = [{"field_id": fid, "values": [{"value": str(extra[fname]).strip()}]}
+                   for fname, fid in FIELD_MAP.items()
+                   if extra.get(fname) and str(extra[fname]).strip()]
+            if cfv:
+                cfv_batch.append({"id": lead_id, "custom_fields_values": cfv})
+
+        # PASSO 3: Envia custom fields em lote (até 50 por vez)
+        for i in range(0, len(cfv_batch), BATCH):
+            await client.patch(f"{BASE}/leads", headers=H, json=cfv_batch[i:i+BATCH])
 
     return {"created": len(created_ids), "errors": errors}
 
