@@ -28,24 +28,20 @@ async def list_logs(db: AsyncSession = Depends(get_db)):
         for l in logs
     ]
 
-@router.delete("/cleanup", summary="Limpa logs antigos e payload pesado para liberar espaço")
+@router.delete("/cleanup", summary="Limpa logs antigos para liberar espaço no disco")
 async def cleanup_logs(db: AsyncSession = Depends(get_db)):
     from sqlalchemy import text
     results = {}
     
-    # 1. Apaga todos os sync_log (são apenas logs de debug, não são dados de negócio)
+    # Apaga todos os sync_log
     r1 = await db.execute(text("DELETE FROM sync_log"))
     results["sync_log_deleted"] = r1.rowcount
     
-    # 2. Apaga expansion_notes de tipo 'status' antigas (mais de 30 dias)
+    # Apaga notas de status antigas (mais de 30 dias)
     r2 = await db.execute(text(
-        "DELETE FROM expansion_notes WHERE type='status' AND created_at < NOW() - INTERVAL '30 days'"
+        "DELETE FROM expansion_notes WHERE type=\'status\' AND created_at < NOW() - INTERVAL \'30 days\'"
     ))
     results["old_status_notes_deleted"] = r2.rowcount
 
     await db.commit()
-    
-    # 3. VACUUM para liberar espaço fisicamente
-    await db.execute(text("VACUUM ANALYZE sync_log"))
-    
     return results
