@@ -446,7 +446,11 @@ async def import_batch(leads_data: list[dict], db: AsyncSession = Depends(get_db
                 errors.append(f"Batch {i//BATCH+1}: HTTP {resp.status_code}")
                 continue
 
-            new_leads = resp.json().get("_embedded", {}).get("leads", [])
+            resp_data = resp.json()
+            if isinstance(resp_data, list):
+                new_leads = resp_data
+            else:
+                new_leads = resp_data.get("_embedded", {}).get("leads", [])
             for idx2, lead_raw in enumerate(new_leads):
                 lead_id = lead_raw["id"]
                 created_ids.append((lead_id, batch[idx2] if idx2 < len(batch) else {}))
