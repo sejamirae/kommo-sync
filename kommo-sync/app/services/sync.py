@@ -204,6 +204,8 @@ async def process_webhook_payload(payload: dict, db: AsyncSession):
     from app.services.kommo import get_valid_token
     access_token = await get_valid_token(db)
 
+    EXPANSAO_PIPELINE_ID = 13865228
+
     # Leads
     for event in ("add", "update", "status", "delete"):
         for raw in _extract_items(payload.get("leads", {}).get(event)):
@@ -212,40 +214,49 @@ async def process_webhook_payload(payload: dict, db: AsyncSession):
                 continue
 
             if event == "delete":
+                # Só deleta se for do pipeline Expansão
                 result = await db.execute(select(Lead).where(Lead.id == lead_id))
                 lead = result.scalar_one_or_none()
-                if lead:
+                if lead and lead.pipeline_id == EXPANSAO_PIPELINE_ID:
                     await db.delete(lead)
-                await _log(db, f"webhook:lead_{event}", "lead", lead_id, raw)
             else:
+                # Verifica pipeline_id no webhook
+                pipeline_id_raw = int(raw.get("pipeline_id", 0))
+
+                # Se veio pipeline_id e não é Expansão, ignora
+                if pipeline_id_raw and pipeline_id_raw != EXPANSAO_PIPELINE_ID:
+                    continue
+
                 result = await db.execute(select(Lead).where(Lead.id == lead_id))
                 lead = result.scalar_one_or_none()
 
-                if not lead:
-                    # Lead novo — busca dados completos na Kommo
+                if not lead and not pipeline_id_raw:
+                    # Sem pipeline_id no webhook — busca na Kommo para verificar
+                    full_data = await _fetch_lead_from_kommo(lead_id, access_token)
+                    if full_data and full_data.get("pipeline_id") != EXPANSAO_PIPELINE_ID:
+                        continue  # Não é do pipeline Expansão
+                    if full_data:
+                        await upsert_lead_from_raw(full_data, db)
+                    continue
+
+                if not lead and pipeline_id_raw == EXPANSAO_PIPELINE_ID:
+                    # Lead novo do pipeline Expansão
                     full_data = await _fetch_lead_from_kommo(lead_id, access_token)
                     if full_data:
                         await upsert_lead_from_raw(full_data, db)
                     else:
-                        # Fallback: cria com o que veio no webhook
                         lead = Lead(id=lead_id)
                         db.add(lead)
-                        if "status_id" in raw:
-                            lead.status_id = int(raw["status_id"])
-                        if "pipeline_id" in raw:
-                            lead.pipeline_id = int(raw["pipeline_id"])
-                else:
-                    # Lead existente — atualiza campos recebidos
+                        lead.status_id = int(raw.get("status_id", 0))
+                        lead.pipeline_id = EXPANSAO_PIPELINE_ID
+                elif lead:
+                    # Atualiza lead existente
                     if "name" in raw:
                         lead.name = raw["name"]
                     if "status_id" in raw:
                         lead.status_id = int(raw["status_id"])
                     if "pipeline_id" in raw:
                         lead.pipeline_id = int(raw["pipeline_id"])
-                    if "price" in raw:
-                        lead.price = int(raw["price"])
-
-                await _log(db, f"webhook:lead_{event}", "lead", lead_id, raw)
 
     # Contatos
     for event in ("add", "update", "delete"):
