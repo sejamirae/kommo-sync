@@ -491,3 +491,75 @@ async def import_batch(leads_data: list[dict], db: AsyncSession = Depends(get_db
                 errors.append(f"DB commit error batch {i//batch_size+1}: {str(ex)[:100]}")
 
     return {"created": len(created_ids), "errors": errors}
+
+@router.post("/fix-contacts", summary="Cria contatos para leads que ainda não têm Tel. comercial")
+async def fix_contacts(db: AsyncSession = Depends(get_db)):
+    """Varre todos os leads do pipeline e cria contato vinculado com telefone."""
+    from app.services.kommo import get_valid_token
+    from app.models.db import Lead
+    import httpx as _httpx
+
+    access_token = await get_valid_token(db)
+    headers_kommo = {"Authorization": f"Bearer {access_token}"}
+
+    # Busca todos os leads do pipeline com telefone preenchido
+    result = await db.execute(
+        select(ExpansionField).where(
+            ExpansionField.telefone.isnot(None),
+            ExpansionField.telefone != ""
+        )
+    )
+    fields = result.scalars().all()
+
+    fixed = 0
+    errors = []
+
+    async with _httpx.AsyncClient(timeout=30) as client:
+        for ef in fields:
+            try:
+                # Verifica se já tem contato vinculado
+                r_lead = await client.get(
+                    f"{BASE}/leads/{ef.lead_id}",
+                    headers=headers_kommo,
+                    params={"with": "contacts"},
+                )
+                if r_lead.status_code != 200:
+                    continue
+
+                linked = r_lead.json().get("_embedded", {}).get("contacts", [])
+
+                contact_payload = {"name": ef.nome_completo or "Médico"}
+                if ef.telefone:
+                    contact_payload["custom_fields_values"] = [
+                        {"field_code": "PHONE", "values": [{"value": ef.telefone, "enum_code": "WORK"}]}
+                    ]
+
+                if linked:
+                    # Atualiza contato existente
+                    contact_id = linked[0]["id"]
+                    await client.patch(
+                        f"{BASE}/contacts",
+                        headers=headers_kommo,
+                        json=[{"id": contact_id, **contact_payload}],
+                    )
+                else:
+                    # Cria e vincula novo contato
+                    rc = await client.post(
+                        f"{BASE}/contacts",
+                        headers=headers_kommo,
+                        json=[contact_payload],
+                    )
+                    if rc.status_code in (200, 201):
+                        new_contacts = rc.json().get("_embedded", {}).get("contacts", [])
+                        if new_contacts:
+                            cid = new_contacts[0]["id"]
+                            await client.post(
+                                f"{BASE}/leads/{ef.lead_id}/links",
+                                headers=headers_kommo,
+                                json=[{"to_entity_id": cid, "to_entity_type": "contacts"}],
+                            )
+                            fixed += 1
+            except Exception as ex:
+                errors.append(f"lead {ef.lead_id}: {str(ex)[:80]}")
+
+    return {"fixed": fixed, "errors": errors}
