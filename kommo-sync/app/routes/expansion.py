@@ -509,11 +509,16 @@ async def import_batch(leads_data: list[dict], db: AsyncSession = Depends(get_db
                     if extra.get(fname) and str(extra[fname]).strip()
                 ]
                 if cfv:
-                    await client.patch(
+                    import logging
+                    r_cfv = await client.patch(
                         f"{BASE}/leads",
                         headers=headers_kommo,
                         json=[{"id": lead_id, "custom_fields_values": cfv}],
                     )
+                    if r_cfv.status_code not in (200, 201):
+                        logging.warning(f"CFV patch failed: {r_cfv.status_code} {r_cfv.text[:300]}")
+                    else:
+                        logging.warning(f"CFV patch ok: {r_cfv.status_code}")
 
             except Exception as ex:
                 errors.append(f"Lead {extra.get('nome_completo','?')}: {str(ex)[:100]}")
