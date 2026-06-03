@@ -247,7 +247,7 @@ async def save_fields(lead_id: int, body: FieldsIn, db: AsyncSession = Depends(g
             await client.patch(f"{BASE}/leads", headers=headers,
                                json=[{"id": lead_id, "custom_fields_values": cfv}])
 
-        # 3. Atualiza Tel. comercial no contato já vinculado ao lead
+        # 3. Cria/atualiza contato vinculado com Tel. comercial
         telefone = data.get("telefone", "")
         nome = data.get("nome_completo", "")
 
@@ -261,27 +261,25 @@ async def save_fields(lead_id: int, body: FieldsIn, db: AsyncSession = Depends(g
                 params={"with": "contacts"},
             )
             if r_lead.status_code == 200:
-                linked = r_lead.json().get("_embedded", {}).get("contacts", [])
+                embedded = r_lead.json().get("_embedded", {})
+                linked = embedded.get("contacts", [])
                 if linked:
                     contact_id = linked[0]["id"]
 
-            contact_payload = {}
-            if nome:
-                contact_payload["name"] = nome
+            contact_payload = {"name": nome or "Médico"}
             if telefone:
                 contact_payload["custom_fields_values"] = [
                     {"field_code": "PHONE", "values": [{"value": telefone, "enum_code": "WORK"}]}
                 ]
 
-            if contact_id and contact_payload:
-                # Atualiza contato existente
+            if contact_id:
                 await client.patch(
                     f"{BASE}/contacts",
                     headers=headers,
                     json=[{"id": contact_id, **contact_payload}],
                 )
-            elif not contact_id and nome:
-                # Nenhum contato vinculado — cria e vincula
+            else:
+                # Cria novo contato e vincula
                 rc = await client.post(
                     f"{BASE}/contacts",
                     headers=headers,
@@ -376,3 +374,64 @@ async def get_expansion_stages(pipeline_id: int, db: AsyncSession = Depends(get_
     stages = data.get("_embedded", {}).get("statuses", [])
     return {"pipeline_id": pipeline_id, "pipeline_name": data.get("name"),
             "stages": [{"id": s["id"], "name": s["name"]} for s in stages]}
+
+@router.post("/import-batch", summary="Importa múltiplos leads de uma vez (mais rápido)")
+async def import_batch(leads_data: list[dict], db: AsyncSession = Depends(get_db)):
+    """Recebe lista de leads e cria todos de uma vez na Kommo via batch."""
+    from app.services.kommo import get_valid_token
+    import httpx as _httpx
+
+    access_token = await get_valid_token(db)
+    headers_kommo = {"Authorization": f"Bearer {access_token}"}
+    PIPELINE_ID = 13865228
+    STATUS_ID = 107011876  # Captação
+
+    if not leads_data:
+        return {"created": 0, "errors": []}
+
+    # Cria todos os leads de uma vez (batch de até 50)
+    created_ids = []
+    errors = []
+    batch_size = 50
+
+    async with _httpx.AsyncClient(timeout=30) as client:
+        for i in range(0, len(leads_data), batch_size):
+            batch = leads_data[i:i+batch_size]
+            payload = [
+                {"name": l.get("name", "Lead"), "status_id": STATUS_ID, "pipeline_id": PIPELINE_ID, "price": 0}
+                for l in batch
+            ]
+            resp = await client.post(
+                f"{BASE}/leads",
+                headers=headers_kommo,
+                json=payload,
+            )
+            if resp.status_code in (200, 201):
+                new_leads = resp.json().get("_embedded", {}).get("leads", [])
+                for idx2, lead_raw in enumerate(new_leads):
+                    lead_id = lead_raw["id"]
+                    created_ids.append(lead_id)
+                    # Salva no banco
+                    from app.services.sync import upsert_lead_from_raw
+                    await upsert_lead_from_raw(lead_raw, db)
+                    # Salva campos extras
+                    if idx2 < len(batch):
+                        extra = batch[idx2]
+                        row = await db.execute(
+                            select(ExpansionField).where(ExpansionField.lead_id == lead_id)
+                        )
+                        ef = row.scalar_one_or_none()
+                        if not ef:
+                            ef = ExpansionField(lead_id=lead_id)
+                            db.add(ef)
+                        for field in ['nome_completo','crm','telefone','cliente','especialidade',
+                                     'unidade','dia_semana','frequencia','horario','horas',
+                                     'unidade_pagamento','valor_mirae','valor_medico','onboarding',
+                                     'origem','gestor','doctorid','status_lead','previsao_inicio']:
+                            if extra.get(field):
+                                setattr(ef, field, str(extra[field]))
+                    await db.commit()
+            else:
+                errors.append(f"Batch {i//batch_size+1}: HTTP {resp.status_code}")
+
+    return {"created": len(created_ids), "ids": created_ids, "errors": errors}
