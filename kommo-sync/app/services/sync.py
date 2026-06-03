@@ -58,9 +58,24 @@ async def sync_leads(db: AsyncSession) -> int:
 
 
 async def upsert_lead_from_raw(raw: dict, db: AsyncSession) -> Lead:
+    from sqlalchemy import text as _text
+    # Use ON CONFLICT to avoid duplicate key errors when webhook and batch run simultaneously
+    await db.execute(_text("""
+        INSERT INTO leads (id, name, status_id, pipeline_id, price)
+        VALUES (:id, :name, :status_id, :pipeline_id, :price)
+        ON CONFLICT (id) DO UPDATE SET
+            name = COALESCE(EXCLUDED.name, leads.name),
+            status_id = COALESCE(EXCLUDED.status_id, leads.status_id),
+            pipeline_id = COALESCE(EXCLUDED.pipeline_id, leads.pipeline_id)
+    """), {
+        "id": raw["id"],
+        "name": raw.get("name"),
+        "status_id": raw.get("status_id"),
+        "pipeline_id": raw.get("pipeline_id"),
+        "price": raw.get("price", 0),
+    })
     result = await db.execute(select(Lead).where(Lead.id == raw["id"]))
     lead = result.scalar_one_or_none()
-
     if not lead:
         lead = Lead(id=raw["id"])
         db.add(lead)
