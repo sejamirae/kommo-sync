@@ -303,9 +303,9 @@ async def save_fields(lead_id: int, body: FieldsIn, db: AsyncSession = Depends(g
                     if new_contacts:
                         contact_id = new_contacts[0]["id"]
                         await client.post(
-                            f"{BASE}/leads/{lead_id}/links",
+                            f"{BASE}/contacts/{contact_id}/links",
                             headers=headers,
-                            json=[{"to_entity_id": contact_id, "to_entity_type": "contacts"}],
+                            json=[{"to_entity_id": lead_id, "to_entity_type": "leads"}],
                         )
 
     return {"ok": True}
@@ -504,9 +504,9 @@ async def import_batch(leads_data: list[dict], db: AsyncSession = Depends(get_db
                             if new_contacts:
                                 cid = new_contacts[0]["id"]
                                 link_resp = await client.post(
-                                    f"{BASE}/leads/{lead_id}/links",
+                                    f"{BASE}/contacts/{cid}/links",
                                     headers=headers_kommo,
-                                    json=[{"to_entity_id": cid, "to_entity_type": "contacts"}],
+                                    json=[{"to_entity_id": lead_id, "to_entity_type": "leads"}],
                                 )
                                 logging.warning(f"Link response: {link_resp.status_code} {link_resp.text[:200]}")
 
