@@ -235,6 +235,8 @@ async def save_fields(lead_id: int, body: FieldsIn, db: AsyncSession = Depends(g
             "Nome Completo":     data.get("nome_completo"),
             "CRM":               data.get("crm"),
             "Telefone Médico":   data.get("telefone"),
+            "Especialidade":     data.get("especialidade"),
+            "Cliente":           data.get("cliente"),
             "Unidade":           data.get("unidade"),
             "Dia da Semana":     data.get("dia_semana"),
             "Frequência":        data.get("frequencia"),
