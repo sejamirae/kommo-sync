@@ -47,6 +47,8 @@ CUSTOM_FIELDS = [
     {"name": "Nome Completo",       "type": "text"},
     {"name": "CRM",                 "type": "text"},
     {"name": "Telefone Médico",     "type": "text"},
+    {"name": "Especialidade",       "type": "text"},
+    {"name": "Cliente",             "type": "text"},
     {"name": "Unidade",             "type": "text"},
     {"name": "Dia da Semana",       "type": "text"},
     {"name": "Frequência",          "type": "text"},
