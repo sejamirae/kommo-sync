@@ -87,19 +87,8 @@ async def upsert_lead_from_raw(raw: dict, db: AsyncSession) -> Lead:
 # ─────────────────────────────────────────────
 
 async def sync_contacts(db: AsyncSession) -> int:
-    page, total = 1, 0
-    while True:
-        contacts = await kommo_svc.get_contacts(db, page=page)
-        if not contacts:
-            break
-        for raw in contacts:
-            await upsert_contact_from_raw(raw, db)
-            total += 1
-        page += 1
-        if len(contacts) < 250:
-            break
-    await db.commit()
-    return total
+    """Sync de contatos desabilitado — enche o banco com contatos de outros pipelines."""
+    return 0
 
 
 async def upsert_contact_from_raw(raw: dict, db: AsyncSession) -> Contact:
