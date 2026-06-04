@@ -38,8 +38,8 @@ FIELD_IDS = {
     "Origem":             4330993,
     "Gestor":             4330995,
     "DoctorID":           4330997,
-    "Pendências":         4330999,
-    "Observações":        4331001,
+    "Especialidade":      4331377,
+    "Cliente":            4331379,
 }
 
 # Campos que queremos criar/manter na Kommo
