@@ -322,7 +322,10 @@ async def get_notes(lead_id: int, db: AsyncSession = Depends(get_db)):
     )
     def fmt_dt(dt):
         if not dt: return ""
-        try: return pytz.utc.localize(dt).astimezone(tz_br).strftime("%d/%m/%Y %H:%M")
+        try:
+            if dt.tzinfo is None:
+                dt = pytz.utc.localize(dt)
+            return dt.astimezone(tz_br).strftime("%d/%m/%Y %H:%M")
         except: return dt.strftime("%d/%m/%Y %H:%M")
     return [
         {"id": n.id, "type": n.type, "text": n.text, "author": n.author,
@@ -338,7 +341,7 @@ async def add_note(lead_id: int, body: NoteIn, db: AsyncSession = Depends(get_db
     await db.commit()
     await db.refresh(note)
     return {"id": note.id, "type": note.type, "text": note.text, "author": note.author,
-            "date": (note.created_at.replace(tzinfo=__import__('pytz').utc).astimezone(__import__('pytz').timezone('America/Sao_Paulo'))).strftime("%d/%m/%Y %H:%M") if note.created_at else "", "source": "local"}
+            "date": (__import__('pytz').utc.localize(note.created_at) if note.created_at and note.created_at.tzinfo is None else note.created_at).astimezone(__import__('pytz').timezone('America/Sao_Paulo')).strftime("%d/%m/%Y %H:%M") if note.created_at else "", "source": "local"}
 
 
 @router.get("/kommo-notes/{lead_id}", summary="Histórico de notas da Kommo")
