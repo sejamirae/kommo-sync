@@ -407,6 +407,7 @@ async def import_batch(leads_data: list[dict], db: AsyncSession = Depends(get_db
     STATUS_ID_BATCH = 107011876
     FIELD_MAP = {
         'nome_completo': 4330963, 'crm': 4330965, 'telefone': 4330967,
+        'especialidade': 4331377, 'cliente': 4331379,
         'unidade': 4330969, 'dia_semana': 4330971, 'frequencia': 4330973,
         'horario': 4330975, 'horas': 4330977, 'unidade_pagamento': 4330985,
         'valor_mirae': 4330987, 'valor_medico': 4330989, 'onboarding': 4330991,
