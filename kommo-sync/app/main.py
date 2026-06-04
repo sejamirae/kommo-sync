@@ -14,11 +14,8 @@ scheduler = AsyncIOScheduler()
 
 
 async def scheduled_sync():
-    """Sincronização automática a cada 30 minutos."""
-    async with AsyncSessionLocal() as db:
-        leads_count = await sync_leads(db)
-        contacts_count = await sync_contacts(db)
-        print(f"[Scheduler] Sync: {leads_count} leads, {contacts_count} contatos")
+    """Scheduler desabilitado — webhook processa eventos em tempo real."""
+    pass  # sync_leads baixava todos os pipelines enchendo o banco
 
 
 @asynccontextmanager

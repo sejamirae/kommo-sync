@@ -41,20 +41,10 @@ async def _log(db: AsyncSession, event_type: str, entity_type: str,
 # ─────────────────────────────────────────────
 
 async def sync_leads(db: AsyncSession) -> int:
-    """Baixa todos os leads da Kommo e persiste/atualiza no banco. Retorna contagem."""
-    page, total = 1, 0
-    while True:
-        leads = await kommo_svc.get_leads(db, page=page)
-        if not leads:
-            break
-        for raw in leads:
-            await upsert_lead_from_raw(raw, db)
-            total += 1
-        page += 1
-        if len(leads) < 250:
-            break
-    await db.commit()
-    return total
+    """Sync desabilitado — use /leads/sync-pipeline?pipeline_id=13865228 no lugar."""
+    # O sync geral baixava 12.539 leads de todos os pipelines enchendo o banco.
+    # Use o endpoint sync-pipeline que filtra só o pipeline Expansão.
+    return 0
 
 
 async def upsert_lead_from_raw(raw: dict, db: AsyncSession) -> Lead:
