@@ -46,6 +46,7 @@ FIELD_IDS = {
 
 # Campos que queremos criar/manter na Kommo
 CUSTOM_FIELDS = [
+    {"name": "First Name",           "type": "text"},
     {"name": "Nome Completo",       "type": "text"},
     {"name": "CRM",                 "type": "text"},
     {"name": "Telefone Médico",     "type": "text"},
@@ -242,6 +243,7 @@ async def save_fields(lead_id: int, body: FieldsIn, db: AsyncSession = Depends(g
     async with httpx.AsyncClient(timeout=30) as client:
         # 2. Atualiza custom fields do lead usando IDs fixos
         name_to_val = {
+            "First Name":        data.get("primeiro_nome"),
             "Nome Completo":     data.get("nome_completo"),
             "CRM":               data.get("crm"),
             "Telefone Médico":   data.get("telefone"),
@@ -448,7 +450,7 @@ async def import_batch(leads_data: list[dict], db: AsyncSession = Depends(get_db
                     p = nome.split()[0]
                     pnome = p[0].upper() + p[1:].lower()
                     l["primeiro_nome"] = pnome
-                contact = {"name": nome or "Médico"}
+                contact = {"name": nome.title() if nome else "Médico"}
                 if telefone:
                     contact["custom_fields_values"] = [
                         {"field_id": 3058666, "values": [{"value": telefone, "enum_id": 7088034}]}
