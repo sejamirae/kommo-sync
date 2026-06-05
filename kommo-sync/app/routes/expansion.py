@@ -445,7 +445,7 @@ async def import_batch(leads_data: list[dict], db: AsyncSession = Depends(get_db
                         {"field_id": 3058666, "values": [{"value": telefone, "enum_id": 7088034}]}
                     ]
                 payload.append({
-                    "name": nome or l.get("name") or "Lead",
+                    "name": l.get("primeiro_nome") or (nome.split()[0].capitalize() if nome else "Lead"),
                     "status_id": STATUS_ID_BATCH,
                     "pipeline_id": PIPELINE_ID_BATCH,
                     "price": 0,
@@ -491,8 +491,8 @@ async def import_batch(leads_data: list[dict], db: AsyncSession = Depends(get_db
                 if not ef:
                     ef = ExpansionField(lead_id=lead_id)
                     db.add(ef)
-                for field in ['nome_completo','crm','telefone','cliente','especialidade',
-                             'unidade','dia_semana','frequencia','horario','horas',
+                for field in ['nome_completo','primeiro_nome','crm','telefone','cliente','especialidade',
+                             'vaga','descricao_vaga','unidade','dia_semana','frequencia','horario','horas',
                              'unidade_pagamento','valor_mirae','valor_medico','onboarding',
                              'origem','gestor','doctorid','status_lead','previsao_inicio']:
                     val = extra.get(field)
