@@ -40,8 +40,8 @@ FIELD_IDS = {
     "DoctorID":           4330997,
     "Especialidade":      4331377,
     "Cliente":            4331379,
-    # "Vaga": ID_AFTER_SETUP,
-    # "Descrição da Vaga": ID_AFTER_SETUP,
+    "Vaga":               4331511,
+    "Descrição da Vaga":  4331513,
 }
 
 # Campos que queremos criar/manter na Kommo
@@ -421,6 +421,7 @@ async def import_batch(leads_data: list[dict], db: AsyncSession = Depends(get_db
         'horario': 4330975, 'horas': 4330977, 'unidade_pagamento': 4330985,
         'valor_mirae': 4330987, 'valor_medico': 4330989, 'onboarding': 4330991,
         'origem': 4330993, 'gestor': 4330995, 'doctorid': 4330997,
+        'vaga': 4331511, 'descricao_vaga': 4331513,
     }
 
     if not leads_data:
