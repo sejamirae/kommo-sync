@@ -435,7 +435,7 @@ async def import_batch(leads_data: list[dict], db: AsyncSession = Depends(get_db
                         {"field_id": 3058666, "values": [{"value": telefone, "enum_id": 7088034}]}
                     ]
                 payload.append({
-                    "name": l.get("name") or nome or "Lead",
+                    "name": nome or l.get("name") or "Lead",
                     "status_id": STATUS_ID_BATCH,
                     "pipeline_id": PIPELINE_ID_BATCH,
                     "price": 0,
