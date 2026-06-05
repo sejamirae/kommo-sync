@@ -119,6 +119,9 @@ async def migrate_db(db: AsyncSession = Depends(get_db)):
     migrations = [
         "ALTER TABLE expansion_fields ADD COLUMN IF NOT EXISTS status_lead VARCHAR(255)",
         "ALTER TABLE expansion_fields ADD COLUMN IF NOT EXISTS pendencias TEXT",
+        "ALTER TABLE expansion_fields ADD COLUMN IF NOT EXISTS primeiro_nome VARCHAR(255)",
+        "ALTER TABLE expansion_fields ADD COLUMN IF NOT EXISTS vaga VARCHAR(500)",
+        "ALTER TABLE expansion_fields ADD COLUMN IF NOT EXISTS descricao_vaga TEXT",
     ]
     results = []
     for sql in migrations:
@@ -439,13 +442,19 @@ async def import_batch(leads_data: list[dict], db: AsyncSession = Depends(get_db
             for l in batch:
                 nome = str(l.get("nome_completo", "")).strip()
                 telefone = str(l.get("telefone", "")).strip()
+                # Garante primeiro_nome sempre calculado
+                pnome = str(l.get("primeiro_nome") or "").strip()
+                if not pnome and nome:
+                    p = nome.split()[0]
+                    pnome = p[0].upper() + p[1:].lower()
+                    l["primeiro_nome"] = pnome
                 contact = {"name": nome or "Médico"}
                 if telefone:
                     contact["custom_fields_values"] = [
                         {"field_id": 3058666, "values": [{"value": telefone, "enum_id": 7088034}]}
                     ]
                 payload.append({
-                    "name": l.get("primeiro_nome") or (nome.split()[0].capitalize() if nome else "Lead"),
+                    "name": pnome or nome or "Lead",
                     "status_id": STATUS_ID_BATCH,
                     "pipeline_id": PIPELINE_ID_BATCH,
                     "price": 0,
@@ -510,7 +519,21 @@ async def import_batch(leads_data: list[dict], db: AsyncSession = Depends(get_db
             if cfv:
                 cfv_batch.append({"id": lead_id, "custom_fields_values": cfv})
 
-        # PASSO 3: Envia custom fields em lote (até 50 por vez)
+        # PASSO 3: Atualiza nome do lead com primeiro_nome
+        name_patch = []
+        for lead_id, extra in created_ids:
+            pnome = extra.get("primeiro_nome") or ""
+            if not pnome:
+                nc = str(extra.get("nome_completo","")).strip()
+                if nc:
+                    p = nc.split()[0]
+                    pnome = p[0].upper() + p[1:].lower()
+            if pnome:
+                name_patch.append({"id": lead_id, "name": pnome})
+        for i in range(0, len(name_patch), BATCH):
+            await client.patch(f"{BASE}/leads", headers=H, json=name_patch[i:i+BATCH])
+
+        # PASSO 4: Envia custom fields em lote (até 50 por vez)
         for i in range(0, len(cfv_batch), BATCH):
             await client.patch(f"{BASE}/leads", headers=H, json=cfv_batch[i:i+BATCH])
 
