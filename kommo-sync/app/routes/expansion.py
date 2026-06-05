@@ -40,6 +40,8 @@ FIELD_IDS = {
     "DoctorID":           4330997,
     "Especialidade":      4331377,
     "Cliente":            4331379,
+    # "Vaga": ID_AFTER_SETUP,
+    # "Descrição da Vaga": ID_AFTER_SETUP,
 }
 
 # Campos que queremos criar/manter na Kommo
@@ -48,6 +50,8 @@ CUSTOM_FIELDS = [
     {"name": "CRM",                 "type": "text"},
     {"name": "Telefone Médico",     "type": "text"},
     {"name": "Especialidade",       "type": "text"},
+    {"name": "Vaga",                 "type": "text"},
+    {"name": "Descrição da Vaga",    "type": "textarea"},
     {"name": "Cliente",             "type": "text"},
     {"name": "Unidade",             "type": "text"},
     {"name": "Dia da Semana",       "type": "text"},
@@ -77,6 +81,9 @@ class FieldsIn(BaseModel):
     telefone: Optional[str] = None
     cliente: Optional[str] = None
     especialidade: Optional[str] = None
+    primeiro_nome: Optional[str] = None
+    vaga: Optional[str] = None
+    descricao_vaga: Optional[str] = None
     unidade: Optional[str] = None
     dia_semana: Optional[str] = None
     frequencia: Optional[str] = None
@@ -237,6 +244,8 @@ async def save_fields(lead_id: int, body: FieldsIn, db: AsyncSession = Depends(g
             "Telefone Médico":   data.get("telefone"),
             "Especialidade":     data.get("especialidade"),
             "Cliente":           data.get("cliente"),
+            "Vaga":              data.get("vaga"),
+            "Descrição da Vaga": data.get("descricao_vaga"),
             "Unidade":           data.get("unidade"),
             "Dia da Semana":     data.get("dia_semana"),
             "Frequência":        data.get("frequencia"),
