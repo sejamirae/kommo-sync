@@ -197,6 +197,10 @@ async def process_webhook_payload(payload: dict, db: AsyncSession):
                 result = await db.execute(select(Lead).where(Lead.id == lead_id))
                 lead = result.scalar_one_or_none()
                 if lead and lead.pipeline_id == EXPANSAO_PIPELINE_ID:
+                    # Deleta campos e notas associados
+                    from sqlalchemy import text as _text
+                    await db.execute(_text("DELETE FROM expansion_fields WHERE lead_id = :id"), {"id": lead_id})
+                    await db.execute(_text("DELETE FROM expansion_notes WHERE lead_id = :id"), {"id": lead_id})
                     await db.delete(lead)
             else:
                 # SEMPRE verifica se o lead é do pipeline Expansão
