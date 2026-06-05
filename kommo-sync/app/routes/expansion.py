@@ -20,6 +20,7 @@ PIPELINE_ID = 13865228
 
 # IDs dos custom fields criados via setup-fields
 FIELD_IDS = {
+    "First Name":         4331519,
     "Nome Completo":      4330963,
     "CRM":                4330965,
     "Telefone Médico":    4330967,
@@ -420,7 +421,7 @@ async def import_batch(leads_data: list[dict], db: AsyncSession = Depends(get_db
     PIPELINE_ID_BATCH = 13865228
     STATUS_ID_BATCH = 107011876
     FIELD_MAP = {
-        'nome_completo': 4330963, 'crm': 4330965, 'telefone': 4330967,
+        'primeiro_nome': 4331519, 'nome_completo': 4330963, 'crm': 4330965, 'telefone': 4330967,
         'especialidade': 4331377, 'cliente': 4331379,
         'unidade': 4330969, 'dia_semana': 4330971, 'frequencia': 4330973,
         'horario': 4330975, 'horas': 4330977, 'unidade_pagamento': 4330985,
