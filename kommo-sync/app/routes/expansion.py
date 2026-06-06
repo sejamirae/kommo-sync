@@ -410,11 +410,13 @@ async def get_expansion_stages(pipeline_id: int, db: AsyncSession = Depends(get_
     return {"pipeline_id": pipeline_id, "pipeline_name": data.get("name"),
             "stages": [{"id": s["id"], "name": s["name"]} for s in stages]}
 
-@router.post("/import-batch", summary="Importa múltiplos leads em lote")
+@router.post("/import-batch", summary="Importa múltiplos leads em lote com upsert inteligente")
 async def import_batch(leads_data: list[dict], db: AsyncSession = Depends(get_db)):
     from app.services.kommo import get_valid_token
     import httpx as _httpx
     from sqlalchemy import text as _text
+    from datetime import datetime, timezone
+    import pytz
 
     access_token = await get_valid_token(db)
     H = {"Authorization": f"Bearer {access_token}"}
@@ -429,35 +431,68 @@ async def import_batch(leads_data: list[dict], db: AsyncSession = Depends(get_db
         'origem': 4330993, 'gestor': 4330995, 'doctorid': 4330997,
         'vaga': 4331511, 'descricao_vaga': 4331513,
     }
+    tz_br = pytz.timezone('America/Sao_Paulo')
 
     if not leads_data:
-        return {"created": 0, "errors": []}
+        return {"created": 0, "updated": 0, "errors": []}
 
     created_ids = []
+    updated_ids = []
     errors = []
     BATCH = 50
 
+    # Busca todos os expansion_fields existentes para fazer match
+    existing_ef = await db.execute(select(ExpansionField))
+    all_ef = existing_ef.scalars().all()
+    # Índice por chave CRM+primeiro_nome e fallback por nome_completo
+    ef_index = {}
+    for ef in all_ef:
+        crm = (ef.crm or "").strip()
+        pnome = (ef.primeiro_nome or "").strip().lower()
+        nome = (ef.nome_completo or "").strip().lower()
+        if crm and pnome:
+            ef_index[f"{crm}_{pnome}"] = ef
+        elif nome:
+            ef_index[nome] = ef
+
     async with _httpx.AsyncClient(timeout=60) as client:
-        # PASSO 1: Cria todos os leads em lote via /leads/complex
-        for i in range(0, len(leads_data), BATCH):
-            batch = leads_data[i:i+BATCH]
+        # Separa novos de existentes
+        to_create = []
+        to_update = []
+
+        for l in leads_data:
+            nome = str(l.get("nome_completo", "")).strip()
+            crm = str(l.get("crm", "")).strip()
+            pnome = str(l.get("primeiro_nome") or "").strip()
+            if not pnome and nome:
+                p = nome.split()[0]
+                pnome = p[0].upper() + p[1:].lower()
+                l["primeiro_nome"] = pnome
+
+            # Gera chave de match
+            key = f"{crm}_{pnome.lower()}" if crm and pnome else nome.lower()
+            existing = ef_index.get(key)
+
+            if existing:
+                to_update.append((existing, l))
+            else:
+                to_create.append(l)
+
+        # ── CRIAR LEADS NOVOS ──────────────────────────────────────
+        for i in range(0, len(to_create), BATCH):
+            batch = to_create[i:i+BATCH]
             payload = []
             for l in batch:
                 nome = str(l.get("nome_completo", "")).strip()
                 telefone = str(l.get("telefone", "")).strip()
-                # Garante primeiro_nome sempre calculado
-                pnome = str(l.get("primeiro_nome") or "").strip()
-                if not pnome and nome:
-                    p = nome.split()[0]
-                    pnome = p[0].upper() + p[1:].lower()
-                    l["primeiro_nome"] = pnome
+                pnome = l.get("primeiro_nome") or nome
                 contact = {"name": nome.title() if nome else "Médico"}
                 if telefone:
                     contact["custom_fields_values"] = [
                         {"field_id": 3058666, "values": [{"value": telefone, "enum_id": 7088034}]}
                     ]
                 payload.append({
-                    "name": pnome or nome or "Lead",
+                    "name": pnome,
                     "status_id": STATUS_ID_BATCH,
                     "pipeline_id": PIPELINE_ID_BATCH,
                     "price": 0,
@@ -466,63 +501,133 @@ async def import_batch(leads_data: list[dict], db: AsyncSession = Depends(get_db
 
             resp = await client.post(f"{BASE}/leads/complex", headers=H, json=payload)
             if resp.status_code not in (200, 201):
-                # Fallback sem contato
-                simple_payload = [{"name": l.get("name") or str(l.get("nome_completo","")).strip() or "Lead",
-                    "status_id": STATUS_ID_BATCH, "pipeline_id": PIPELINE_ID_BATCH, "price": 0}
-                    for l in batch]
-                resp = await client.post(f"{BASE}/leads", headers=H, json=simple_payload)
-
-            if resp.status_code not in (200, 201):
-                errors.append(f"Batch {i//BATCH+1}: HTTP {resp.status_code}")
-                continue
+                resp2 = await client.post(f"{BASE}/leads", headers=H, json=[
+                    {"name": l.get("primeiro_nome") or str(l.get("nome_completo","")).strip() or "Lead",
+                     "status_id": STATUS_ID_BATCH, "pipeline_id": PIPELINE_ID_BATCH, "price": 0}
+                    for l in batch])
+                if resp2.status_code not in (200, 201):
+                    errors.append(f"Batch criação: HTTP {resp.status_code}")
+                    continue
+                resp = resp2
 
             resp_data = resp.json()
-            if isinstance(resp_data, list):
-                new_leads = resp_data
-            else:
-                new_leads = resp_data.get("_embedded", {}).get("leads", [])
+            new_leads = resp_data if isinstance(resp_data, list) else resp_data.get("_embedded", {}).get("leads", [])
+
             for idx2, lead_raw in enumerate(new_leads):
                 lead_id = lead_raw["id"]
-                created_ids.append((lead_id, batch[idx2] if idx2 < len(batch) else {}))
+                extra = batch[idx2] if idx2 < len(batch) else {}
+                created_ids.append((lead_id, extra))
 
-        # PASSO 2: Salva campos no banco e na Kommo em lote
-        cfv_batch = []  # lista de patches para a Kommo
-        for lead_id, extra in created_ids:
-            # Banco local
-            try:
-                await db.execute(_text("""
-                    INSERT INTO leads (id, name, status_id, pipeline_id, price)
-                    VALUES (:id, :name, :status_id, :pipeline_id, :price)
-                    ON CONFLICT (id) DO UPDATE SET name=EXCLUDED.name,
-                        status_id=EXCLUDED.status_id, pipeline_id=EXCLUDED.pipeline_id
-                """), {"id": lead_id, "name": extra.get("name") or str(extra.get("nome_completo","")).strip() or "Lead",
-                       "status_id": STATUS_ID_BATCH, "pipeline_id": PIPELINE_ID_BATCH, "price": 0})
+                try:
+                    await db.execute(_text("""
+                        INSERT INTO leads (id, name, status_id, pipeline_id, price)
+                        VALUES (:id, :name, :status_id, :pipeline_id, :price)
+                        ON CONFLICT (id) DO UPDATE SET name=EXCLUDED.name,
+                            status_id=EXCLUDED.status_id, pipeline_id=EXCLUDED.pipeline_id
+                    """), {"id": lead_id,
+                           "name": extra.get("primeiro_nome") or str(extra.get("nome_completo","")).strip() or "Lead",
+                           "status_id": STATUS_ID_BATCH, "pipeline_id": PIPELINE_ID_BATCH, "price": 0})
 
-                row_ef = await db.execute(select(ExpansionField).where(ExpansionField.lead_id == lead_id))
-                ef = row_ef.scalar_one_or_none()
-                if not ef:
                     ef = ExpansionField(lead_id=lead_id)
                     db.add(ef)
-                for field in ['nome_completo','primeiro_nome','crm','telefone','cliente','especialidade',
-                             'vaga','descricao_vaga','unidade','dia_semana','frequencia','horario','horas',
-                             'unidade_pagamento','valor_mirae','valor_medico','onboarding',
-                             'origem','gestor','doctorid','status_lead','previsao_inicio']:
-                    val = extra.get(field)
-                    if val is not None and str(val).strip():
-                        setattr(ef, field, str(val).strip())
+                    for field in ['nome_completo','primeiro_nome','crm','telefone','cliente','especialidade',
+                                 'vaga','descricao_vaga','unidade','dia_semana','frequencia','horario','horas',
+                                 'unidade_pagamento','valor_mirae','valor_medico','onboarding',
+                                 'origem','gestor','doctorid','status_lead','previsao_inicio']:
+                        val = extra.get(field)
+                        if val is not None and str(val).strip():
+                            setattr(ef, field, str(val).strip())
+
+                    await db.commit()
+                except Exception as ex:
+                    await db.rollback()
+                    errors.append(f"DB create {lead_id}: {str(ex)[:80]}")
+
+        # ── ATUALIZAR LEADS EXISTENTES ─────────────────────────────
+        cfv_update = []
+        for (ef, l) in to_update:
+            lead_id = ef.lead_id
+            now_br = datetime.now(tz_br).strftime("%d/%m/%Y %H:%M")
+            changes = []
+
+            # Especialidade — acumula
+            esp_nova = str(l.get("especialidade", "")).strip()
+            if esp_nova:
+                esps_atuais = [e.strip() for e in (ef.especialidade or "").split(",") if e.strip()]
+                if esp_nova not in esps_atuais:
+                    esps_atuais.append(esp_nova)
+                    changes.append(f"Especialidade adicionada: {esp_nova}")
+                    ef.especialidade = ", ".join(esps_atuais)
+
+            # Campos que atualizam e registram mudança no histórico
+            for field, label in [
+                ('vaga', 'Vaga'),
+                ('descricao_vaga', 'Descrição da Vaga'),
+                ('cliente', 'Cliente'),
+                ('origem', 'Origem'),
+                ('gestor', 'Gestor'),
+            ]:
+                novo = str(l.get(field, "")).strip()
+                atual = str(getattr(ef, field) or "").strip()
+                if novo and novo != atual:
+                    if atual:
+                        changes.append(f'{label}: "{atual}" → "{novo}"')
+                    else:
+                        changes.append(f'{label}: "{novo}"')
+                    setattr(ef, field, novo)
+
+            # Campos cadastrais — atualiza direto
+            for field in ['nome_completo', 'primeiro_nome', 'crm', 'telefone']:
+                novo = str(l.get(field, "")).strip()
+                if novo:
+                    setattr(ef, field, novo)
+
+            # Agenda e Financeiro — limpa e registra no histórico
+            agenda_fields = ['unidade','dia_semana','frequencia','horario','horas','previsao_inicio']
+            fin_fields = ['unidade_pagamento','valor_mirae','valor_medico','onboarding']
+            agenda_vals = {f: str(getattr(ef, f) or "").strip() for f in agenda_fields if getattr(ef, f)}
+            fin_vals = {f: str(getattr(ef, f) or "").strip() for f in fin_fields if getattr(ef, f)}
+
+            if agenda_vals:
+                agenda_str = ", ".join(f'{k}: "{v}"' for k,v in agenda_vals.items())
+                changes.append(f"Agenda resetada ({agenda_str})")
+                for f in agenda_fields:
+                    setattr(ef, f, None)
+
+            if fin_vals:
+                fin_str = ", ".join(f'{k}: "{v}"' for k,v in fin_vals.items())
+                changes.append(f"Financeiro resetado ({fin_str})")
+                for f in fin_fields:
+                    setattr(ef, f, None)
+
+            try:
                 await db.commit()
+                updated_ids.append(lead_id)
+
+                # Registra no histórico
+                if changes:
+                    texto = f"[Importação {now_br}]
+" + "
+".join(changes)
+                    note = ExpansionNote(lead_id=lead_id, type="nota", text=texto, author="Sistema")
+                    db.add(note)
+                    await db.commit()
+
+                # Atualiza campos na Kommo
+                cfv = [
+                    {"field_id": fid, "values": [{"value": str(getattr(ef, fname) or "").strip()}]}
+                    for fname, fid in FIELD_MAP.items()
+                    if getattr(ef, fname, None) and str(getattr(ef, fname) or "").strip()
+                ]
+                if cfv:
+                    cfv_update.append({"id": lead_id, "custom_fields_values": cfv})
+
             except Exception as ex:
                 await db.rollback()
-                errors.append(f"DB {lead_id}: {str(ex)[:80]}")
+                errors.append(f"DB update {lead_id}: {str(ex)[:80]}")
 
-            # Custom fields para Kommo
-            cfv = [{"field_id": fid, "values": [{"value": str(extra[fname]).strip()}]}
-                   for fname, fid in FIELD_MAP.items()
-                   if extra.get(fname) and str(extra[fname]).strip()]
-            if cfv:
-                cfv_batch.append({"id": lead_id, "custom_fields_values": cfv})
-
-        # PASSO 3: Atualiza nome do lead com primeiro_nome
+        # PATCH campos novos na Kommo (criados)
+        cfv_batch_new = []
         name_patch = []
         for lead_id, extra in created_ids:
             pnome = extra.get("primeiro_nome") or ""
@@ -533,14 +638,23 @@ async def import_batch(leads_data: list[dict], db: AsyncSession = Depends(get_db
                     pnome = p[0].upper() + p[1:].lower()
             if pnome:
                 name_patch.append({"id": lead_id, "name": pnome})
+
+            cfv = [
+                {"field_id": fid, "values": [{"value": str(extra.get(fname,"")).strip()}]}
+                for fname, fid in FIELD_MAP.items()
+                if extra.get(fname) and str(extra.get(fname,"")).strip()
+            ]
+            if cfv:
+                cfv_batch_new.append({"id": lead_id, "custom_fields_values": cfv})
+
         for i in range(0, len(name_patch), BATCH):
             await client.patch(f"{BASE}/leads", headers=H, json=name_patch[i:i+BATCH])
+        for i in range(0, len(cfv_batch_new), BATCH):
+            await client.patch(f"{BASE}/leads", headers=H, json=cfv_batch_new[i:i+BATCH])
+        for i in range(0, len(cfv_update), BATCH):
+            await client.patch(f"{BASE}/leads", headers=H, json=cfv_update[i:i+BATCH])
 
-        # PASSO 4: Envia custom fields em lote (até 50 por vez)
-        for i in range(0, len(cfv_batch), BATCH):
-            await client.patch(f"{BASE}/leads", headers=H, json=cfv_batch[i:i+BATCH])
-
-    return {"created": len(created_ids), "errors": errors}
+    return {"created": len(created_ids), "updated": len(updated_ids), "errors": errors}
 
 @router.post("/fix-contacts", summary="Cria contatos para leads que ainda não têm Tel. comercial")
 async def fix_contacts(db: AsyncSession = Depends(get_db)):
