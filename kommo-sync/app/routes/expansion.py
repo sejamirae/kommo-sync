@@ -606,9 +606,7 @@ async def import_batch(leads_data: list[dict], db: AsyncSession = Depends(get_db
 
                 # Registra no histórico
                 if changes:
-                    texto = f"[Importação {now_br}]
-" + "
-".join(changes)
+                    texto = f"[Importacao {now_br}]\n" + "\n".join(changes)
                     note = ExpansionNote(lead_id=lead_id, type="nota", text=texto, author="Sistema")
                     db.add(note)
                     await db.commit()
