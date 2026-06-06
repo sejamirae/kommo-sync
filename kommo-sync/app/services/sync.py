@@ -217,10 +217,26 @@ async def process_webhook_payload(payload: dict, db: AsyncSession):
                         # Foi movido para outro pipeline — remove do banco
                         await db.delete(lead)
                         continue
+                    old_status_id = lead.status_id
                     if "status_id" in raw:
                         lead.status_id = int(raw["status_id"])
                     if "name" in raw:
                         lead.name = raw["name"]
+                    # Registra no histórico se mudou de etapa
+                    if "status_id" in raw and int(raw["status_id"]) != old_status_id:
+                        from app.models.db import ExpansionNote
+                        stage_names = {
+                            107011876: "CAPTAÇÃO", 107199644: "ERRO DE DISPARO",
+                            107199648: "INTERESSE INICIAL", 107199652: "INTERESSE EFETIVO",
+                            107199656: "SEM INTERESSE", 106988596: "CADASTRO MIRAE",
+                            106988600: "CADASTRO CLIENTE", 106988604: "AGENDAS",
+                        }
+                        new_stage = stage_names.get(int(raw["status_id"]), f"Etapa {raw['status_id']}")
+                        note = ExpansionNote(
+                            lead_id=lead_id, type="status",
+                            text=f"Etapa: {new_stage}", author="Kommo"
+                        )
+                        db.add(note)
                 else:
                     # Lead novo — busca na Kommo para verificar pipeline
                     full_data = await _fetch_lead_from_kommo(lead_id, access_token)
