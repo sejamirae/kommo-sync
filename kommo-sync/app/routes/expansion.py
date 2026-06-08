@@ -757,3 +757,48 @@ async def test_contact_link(db: AsyncSession = Depends(get_db)):
         results["complex"] = {"status": r1.status_code, "body": r1.text[:500]}
 
     return results
+
+# ─────────────────────────────────────────────
+# Equipe: Gestores e Usuários (compartilhados)
+# ─────────────────────────────────────────────
+
+class TeamMemberIn(BaseModel):
+    name: str
+    role: str  # 'gestor' ou 'usuario'
+
+@router.get("/team", summary="Lista gestores e usuários")
+async def get_team(db: AsyncSession = Depends(get_db)):
+    from app.models.db import TeamMember
+    result = await db.execute(select(TeamMember).order_by(TeamMember.name))
+    members = result.scalars().all()
+    gestores = [m.name for m in members if m.role == "gestor"]
+    usuarios = [m.name for m in members if m.role == "usuario"]
+    return {"gestores": gestores, "usuarios": usuarios}
+
+@router.post("/team", summary="Adiciona gestor ou usuário")
+async def add_team_member(body: TeamMemberIn, db: AsyncSession = Depends(get_db)):
+    from app.models.db import TeamMember
+    name = body.name.strip()
+    if not name:
+        return {"ok": False, "error": "Nome vazio"}
+    # Verifica duplicata
+    existing = await db.execute(
+        select(TeamMember).where(TeamMember.name == name, TeamMember.role == body.role)
+    )
+    if existing.scalar_one_or_none():
+        return {"ok": True, "duplicate": True}
+    member = TeamMember(name=name, role=body.role)
+    db.add(member)
+    await db.commit()
+    return {"ok": True}
+
+@router.delete("/team", summary="Remove gestor ou usuário")
+async def remove_team_member(name: str, role: str, db: AsyncSession = Depends(get_db)):
+    from app.models.db import TeamMember
+    from sqlalchemy import delete
+    await db.execute(
+        delete(TeamMember).where(TeamMember.name == name, TeamMember.role == role)
+    )
+    await db.commit()
+    return {"ok": True}
+

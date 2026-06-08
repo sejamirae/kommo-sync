@@ -124,3 +124,13 @@ class ExpansionNote(Base):
     text       = Column(Text, nullable=False)
     author     = Column(String(255))
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+class TeamMember(Base):
+    """Gestores e usuários compartilhados entre todos do painel Expansão."""
+    __tablename__ = "team_members"
+
+    id         = Column(Integer, primary_key=True, autoincrement=True)
+    name       = Column(String(255), nullable=False)
+    role       = Column(String(20), nullable=False)  # 'gestor' ou 'usuario'
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
