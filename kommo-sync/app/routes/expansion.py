@@ -1074,3 +1074,52 @@ async def delete_old_text_fields(db: AsyncSession = Depends(get_db)):
 
     return {"deleted": deleted, "errors": errors}
 
+@router.post("/rename-gestor-options", summary="Renomeia as opções do campo Gestor para nomes completos")
+async def rename_gestor_options(db: AsyncSession = Depends(get_db)):
+    from app.services.kommo import get_valid_token
+    import httpx as _httpx
+
+    access_token = await get_valid_token(db)
+    H = {"Authorization": f"Bearer {access_token}"}
+
+    # Mapa: valor antigo (maiúsculo) → nome novo
+    RENAME = {
+        "ALESSANDRA": "Alessandra Loreta",
+        "PEDRO HENRIQUE": "Pedro Henrique",
+        "JÉSSICA": "Jéssica Moya",
+        "ANDRÉ": "André Martins",
+        "FELIPE": "Felipe Queiroz",
+    }
+
+    async with _httpx.AsyncClient(timeout=60) as client:
+        # Encontra o campo Gestor ▾
+        resp = await client.get(f"{BASE}/leads/custom_fields", headers=H, params={"limit": 250})
+        all_fields = resp.json().get("_embedded", {}).get("custom_fields", [])
+        gestor_field = next((f for f in all_fields if f["name"] == "Gestor ▾"), None)
+        if not gestor_field:
+            return {"error": "Campo Gestor ▾ não encontrado"}
+
+        gestor_id = gestor_field["id"]
+        current_enums = gestor_field.get("enums") or []
+
+        # Monta os enums atualizados mantendo os IDs
+        new_enums = []
+        renamed = []
+        for e in current_enums:
+            old_value = e["value"]
+            new_value = RENAME.get(old_value.upper(), old_value)
+            new_enums.append({"id": e["id"], "value": new_value, "sort": e.get("sort", 0)})
+            if new_value != old_value:
+                renamed.append(f"{old_value} → {new_value}")
+
+        # Atualiza o campo
+        r = await client.patch(
+            f"{BASE}/leads/custom_fields/{gestor_id}",
+            headers=H,
+            json={"enums": new_enums},
+        )
+        if r.status_code not in (200, 201):
+            return {"error": f"HTTP {r.status_code} - {r.text[:200]}"}
+
+    return {"renamed": renamed, "field_id": gestor_id}
+
