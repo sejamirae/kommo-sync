@@ -424,13 +424,17 @@ async def import_batch(leads_data: list[dict], db: AsyncSession = Depends(get_db
     STATUS_ID_BATCH = 107011876
     FIELD_MAP = {
         'primeiro_nome': 4331519, 'nome_completo': 4330963, 'crm': 4330965, 'telefone': 4330967,
-        'especialidade': 4331377, 'cliente': 4331379,
         'unidade': 4330969, 'dia_semana': 4330971, 'frequencia': 4330973,
         'horario': 4330975, 'horas': 4330977, 'unidade_pagamento': 4330985,
         'valor_mirae': 4330987, 'valor_medico': 4330989, 'onboarding': 4330991,
-        'origem': 4330993, 'gestor': 4330995, 'doctorid': 4330997,
-        'vaga': 4331511, 'descricao_vaga': 4331513,
+        'origem': 4330993, 'doctorid': 4330997,
+        'descricao_vaga': 4331513, 'observacoes': 4331835,
     }
+    # Campos multiselect: nome no banco → (field_id, precisa enum)
+    MULTI_MAP = {
+        'especialidade': 4331825, 'cliente': 4331827, 'gestor': 4331829, 'vaga': 4331831,
+    }
+    STATUS_FIELD_ID = 4331839
     tz_br = pytz.timezone('America/Sao_Paulo')
 
     if not leads_data:
@@ -624,6 +628,24 @@ async def import_batch(leads_data: list[dict], db: AsyncSession = Depends(get_db
                 await db.rollback()
                 errors.append(f"DB update {lead_id}: {str(ex)[:80]}")
 
+        # Carrega enums dos campos multiselect e status (uma vez)
+        import re as _re2
+        enum_lookup = {}  # field_id → {valor_upper: enum_id}
+        resp_cf = await client.get(f"{BASE}/leads/custom_fields", headers=H, params={"limit": 250})
+        for f in resp_cf.json().get("_embedded", {}).get("custom_fields", []):
+            if f["id"] in list(MULTI_MAP.values()) + [STATUS_FIELD_ID]:
+                emap = {}
+                raw = f.get("enums")
+                items = raw.values() if isinstance(raw, dict) else (raw or [])
+                for e in items:
+                    clean = _re2.sub(r"^\[\d+\]\s*", "", e["value"]).strip().upper()
+                    emap[clean] = e["id"]
+                    emap[e["value"].strip().upper()] = e["id"]
+                enum_lookup[f["id"]] = emap
+
+        # Resolve enum_id do status "Lead Captado" (padrão)
+        status_default_eid = enum_lookup.get(STATUS_FIELD_ID, {}).get("LEAD CAPTADO")
+
         # PATCH campos novos na Kommo (criados)
         cfv_batch_new = []
         name_patch = []
@@ -642,6 +664,31 @@ async def import_batch(leads_data: list[dict], db: AsyncSession = Depends(get_db
                 for fname, fid in FIELD_MAP.items()
                 if extra.get(fname) and str(extra.get(fname,"")).strip()
             ]
+
+            # Campos multiselect (especialidade, cliente, gestor, vaga)
+            for fname, fid in MULTI_MAP.items():
+                raw = str(extra.get(fname, "")).strip()
+                if not raw:
+                    continue
+                emap = enum_lookup.get(fid, {})
+                # Especialidade composta → destrincha
+                vals = []
+                if fname == "especialidade" and raw in ESPECIALIDADE_SPLIT:
+                    vals = ESPECIALIDADE_SPLIT[raw]
+                else:
+                    vals = [raw]
+                enum_ids = []
+                for v in vals:
+                    eid = emap.get(v.strip().upper())
+                    if eid:
+                        enum_ids.append(eid)
+                if enum_ids:
+                    cfv.append({"field_id": fid, "values": [{"enum_id": e} for e in enum_ids]})
+
+            # Status padrão = Lead Captado
+            if status_default_eid:
+                cfv.append({"field_id": STATUS_FIELD_ID, "values": [{"enum_id": status_default_eid}]})
+
             if cfv:
                 cfv_batch_new.append({"id": lead_id, "custom_fields_values": cfv})
 
