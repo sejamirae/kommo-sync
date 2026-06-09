@@ -1123,3 +1123,65 @@ async def rename_gestor_options(db: AsyncSession = Depends(get_db)):
 
     return {"renamed": renamed, "field_id": gestor_id}
 
+@router.post("/create-status-obs-fields", summary="Cria campos Status (select) e Observações (textarea) na Kommo")
+async def create_status_obs_fields(db: AsyncSession = Depends(get_db)):
+    from app.services.kommo import get_valid_token
+    import httpx as _httpx
+
+    access_token = await get_valid_token(db)
+    H = {"Authorization": f"Bearer {access_token}"}
+
+    STATUS_OPTIONS = [
+        "🔴 Lead Captado",
+        "🔴 Adicionado no Corpo Clínico",
+        "🔵 Cadastro Enviado para Mirae",
+        "🔵 Cadastro Mirae Aprovado",
+        "🔵 Cadastro Mirae Negado",
+        "🔵 Cadastro do Cliente Enviado",
+        "🔵 Cadastro do Cliente Incompleto",
+        "🔵 Cadastro do Cliente Completo",
+        "🟢 Agenda Solicitada",
+        "🟢 Agenda Negada",
+        "🟢 Agenda Confirmada",
+        "🟠 Desistência",
+    ]
+
+    async with _httpx.AsyncClient(timeout=60) as client:
+        resp = await client.get(f"{BASE}/leads/custom_fields", headers=H, params={"limit": 250})
+        all_fields = resp.json().get("_embedded", {}).get("custom_fields", [])
+        existing = {f["name"]: f["id"] for f in all_fields}
+
+        created = []
+        result_ids = {}
+
+        # Status (select)
+        if "Status" in existing:
+            result_ids["Status"] = existing["Status"]
+            created.append(f"Status JÁ EXISTE (id:{existing['Status']})")
+        else:
+            enums = [{"value": opt, "sort": i} for i, opt in enumerate(STATUS_OPTIONS)]
+            r = await client.post(f"{BASE}/leads/custom_fields", headers=H,
+                                  json=[{"name": "Status", "type": "select", "enums": enums}])
+            if r.status_code in (200, 201):
+                fid = r.json().get("_embedded", {}).get("custom_fields", [{}])[0].get("id")
+                result_ids["Status"] = fid
+                created.append(f"Status CRIADO (id:{fid})")
+            else:
+                created.append(f"Status ERRO: HTTP {r.status_code} - {r.text[:100]}")
+
+        # Observações (textarea)
+        if "Observações" in existing:
+            result_ids["Observações"] = existing["Observações"]
+            created.append(f"Observações JÁ EXISTE (id:{existing['Observações']})")
+        else:
+            r = await client.post(f"{BASE}/leads/custom_fields", headers=H,
+                                  json=[{"name": "Observações", "type": "textarea"}])
+            if r.status_code in (200, 201):
+                fid = r.json().get("_embedded", {}).get("custom_fields", [{}])[0].get("id")
+                result_ids["Observações"] = fid
+                created.append(f"Observações CRIADO (id:{fid})")
+            else:
+                created.append(f"Observações ERRO: HTTP {r.status_code} - {r.text[:100]}")
+
+    return {"created": created, "field_ids": result_ids}
+
