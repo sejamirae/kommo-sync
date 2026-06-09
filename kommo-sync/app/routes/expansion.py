@@ -1185,3 +1185,48 @@ async def create_status_obs_fields(db: AsyncSession = Depends(get_db)):
 
     return {"created": created, "field_ids": result_ids}
 
+@router.post("/fix-status-options", summary="Corrige/recria as opções do campo Status")
+async def fix_status_options(db: AsyncSession = Depends(get_db)):
+    from app.services.kommo import get_valid_token
+    import httpx as _httpx
+
+    access_token = await get_valid_token(db)
+    H = {"Authorization": f"Bearer {access_token}"}
+
+    STATUS_ID = 4331833
+    STATUS_OPTIONS = [
+        "🔴 Lead Captado",
+        "🔴 Adicionado no Corpo Clínico",
+        "🔵 Cadastro Enviado para Mirae",
+        "🔵 Cadastro Mirae Aprovado",
+        "🔵 Cadastro Mirae Negado",
+        "🔵 Cadastro do Cliente Enviado",
+        "🔵 Cadastro do Cliente Incompleto",
+        "🔵 Cadastro do Cliente Completo",
+        "🟢 Agenda Solicitada",
+        "🟢 Agenda Negada",
+        "🟢 Agenda Confirmada",
+        "🟠 Desistência",
+    ]
+
+    async with _httpx.AsyncClient(timeout=60) as client:
+        enums = [{"value": opt, "sort": i} for i, opt in enumerate(STATUS_OPTIONS)]
+        r = await client.patch(
+            f"{BASE}/leads/custom_fields/{STATUS_ID}",
+            headers=H,
+            json={"enums": enums},
+        )
+        result_status = r.status_code
+        result_text = r.text[:300]
+
+        # Confirma lendo de volta
+        resp = await client.get(f"{BASE}/leads/custom_fields/{STATUS_ID}", headers=H)
+        field = resp.json()
+        current_enums = [e["value"] for e in (field.get("enums") or [])]
+
+    return {
+        "patch_status": result_status,
+        "patch_response": result_text,
+        "enums_atuais": current_enums,
+    }
+
