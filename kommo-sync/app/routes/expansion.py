@@ -1473,3 +1473,56 @@ async def migrate_status_to_kommo(db: AsyncSession = Depends(get_db)):
 
     return {"patched": patched, "total": len(rows), "missing": list(missing), "errors": errors}
 
+@router.post("/cleanup-orphan-leads", summary="Remove do banco leads que não existem mais na Kommo")
+async def cleanup_orphan_leads(db: AsyncSession = Depends(get_db)):
+    from app.services.kommo import get_valid_token
+    import httpx as _httpx
+    from sqlalchemy import text as _text
+
+    access_token = await get_valid_token(db)
+    H = {"Authorization": f"Bearer {access_token}"}
+    PIPELINE = 13865228
+
+    # Busca todos os lead_ids que EXISTEM na Kommo (pipeline Expansão)
+    kommo_ids = set()
+    async with _httpx.AsyncClient(timeout=60) as client:
+        page = 1
+        while True:
+            r = await client.get(f"{BASE}/leads", headers=H,
+                                 params={"filter[pipeline_id]": PIPELINE, "page": page, "limit": 250})
+            if r.status_code != 200:
+                break
+            data = r.json()
+            leads = data.get("_embedded", {}).get("leads", [])
+            if not leads:
+                break
+            for l in leads:
+                kommo_ids.add(l["id"])
+            # Próxima página?
+            if not data.get("_links", {}).get("next"):
+                break
+            page += 1
+
+    # Lê os lead_ids do banco
+    result = await db.execute(select(ExpansionField))
+    rows = result.scalars().all()
+    db_ids = [ef.lead_id for ef in rows]
+
+    # Identifica órfãos (no banco mas não na Kommo)
+    orphans = [lid for lid in db_ids if lid not in kommo_ids]
+
+    # Apaga órfãos
+    deleted = 0
+    for lid in orphans:
+        await db.execute(_text("DELETE FROM expansion_fields WHERE lead_id = :id"), {"id": lid})
+        await db.execute(_text("DELETE FROM expansion_notes WHERE lead_id = :id"), {"id": lid})
+        await db.execute(_text("DELETE FROM leads WHERE id = :id"), {"id": lid})
+        deleted += 1
+    await db.commit()
+
+    return {
+        "kommo_leads": len(kommo_ids),
+        "db_leads": len(db_ids),
+        "orphans_removed": deleted,
+    }
+
