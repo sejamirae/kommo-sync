@@ -1284,3 +1284,43 @@ async def recreate_status_clean(db: AsyncSession = Depends(get_db)):
 
     return {"new_status_id": new_id, "http": status_code, "enums_confirmados": confirmed}
 
+@router.post("/rewrite-status-labels", summary="Reescreve opções do Status com indicador de fase")
+async def rewrite_status_labels(db: AsyncSession = Depends(get_db)):
+    from app.services.kommo import get_valid_token
+    import httpx as _httpx
+
+    access_token = await get_valid_token(db)
+    H = {"Authorization": f"Bearer {access_token}"}
+
+    async with _httpx.AsyncClient(timeout=60) as client:
+        # Encontra o campo Status
+        resp = await client.get(f"{BASE}/leads/custom_fields", headers=H, params={"limit": 250})
+        all_fields = resp.json().get("_embedded", {}).get("custom_fields", [])
+        status_field = next((f for f in all_fields if f["name"] == "Status"), None)
+        if not status_field:
+            return {"error": "Campo Status não encontrado"}
+        status_id = status_field["id"]
+
+        # Opções na ordem desejada
+        STATUS_OPTIONS = [
+            "[1] Lead Captado",
+            "[1] Adicionado no Corpo Clínico",
+            "[2] Cadastro Enviado para Mirae",
+            "[2] Cadastro Mirae Aprovado",
+            "[2] Cadastro Mirae Negado",
+            "[2] Cadastro do Cliente Enviado",
+            "[2] Cadastro do Cliente Incompleto",
+            "[2] Cadastro do Cliente Completo",
+            "[3] Agenda Solicitada",
+            "[3] Agenda Negada",
+            "[3] Agenda Confirmada",
+            "[4] Desistência",
+        ]
+        enums = [{"value": opt, "sort": i + 1} for i, opt in enumerate(STATUS_OPTIONS)]
+        r = await client.patch(
+            f"{BASE}/leads/custom_fields/{status_id}",
+            headers=H,
+            json={"enums": enums},
+        )
+        return {"status_id": status_id, "http": r.status_code, "options": STATUS_OPTIONS}
+
