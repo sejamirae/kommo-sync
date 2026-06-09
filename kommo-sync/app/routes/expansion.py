@@ -646,6 +646,51 @@ async def import_batch(leads_data: list[dict], db: AsyncSession = Depends(get_db
         # Resolve enum_id do status "Lead Captado" (padrão)
         status_default_eid = enum_lookup.get(STATUS_FIELD_ID, {}).get("LEAD CAPTADO")
 
+        # ── Cria enums faltantes nos multiselect (especialidade, cliente, gestor, vaga) ──
+        # Coleta todos os valores únicos por campo
+        missing_by_field = {}  # fid → set de valores novos
+        for lead_id, extra in created_ids:
+            for fname, fid in MULTI_MAP.items():
+                raw = str(extra.get(fname, "")).strip()
+                if not raw:
+                    continue
+                vals = ESPECIALIDADE_SPLIT[raw] if (fname == "especialidade" and raw in ESPECIALIDADE_SPLIT) else [raw]
+                emap = enum_lookup.get(fid, {})
+                for v in vals:
+                    if v.strip().upper() not in emap:
+                        missing_by_field.setdefault(fid, set()).add(v.strip())
+
+        # Adiciona os enums faltantes na Kommo
+        for fid, novos in missing_by_field.items():
+            # Lê enums atuais
+            rf = await client.get(f"{BASE}/leads/custom_fields/{fid}", headers=H)
+            field = rf.json()
+            raw_enums = field.get("enums")
+            cur = []
+            if isinstance(raw_enums, dict):
+                cur = [{"id": e["id"], "value": e["value"], "sort": e.get("sort", 0)} for e in raw_enums.values()]
+            elif isinstance(raw_enums, list):
+                cur = [{"id": e["id"], "value": e["value"], "sort": e.get("sort", 0)} for e in raw_enums]
+            # Adiciona novos
+            base_sort = len(cur) + 1
+            for i, nv in enumerate(sorted(novos)):
+                cur.append({"value": nv, "sort": base_sort + i})
+            await client.patch(f"{BASE}/leads/custom_fields/{fid}", headers=H, json={"enums": cur})
+
+        # Recarrega enum_lookup após criar os novos
+        if missing_by_field:
+            resp_cf2 = await client.get(f"{BASE}/leads/custom_fields", headers=H, params={"limit": 250})
+            for f in resp_cf2.json().get("_embedded", {}).get("custom_fields", []):
+                if f["id"] in list(MULTI_MAP.values()) + [STATUS_FIELD_ID]:
+                    emap = {}
+                    raw = f.get("enums")
+                    items = raw.values() if isinstance(raw, dict) else (raw or [])
+                    for e in items:
+                        clean = _re2.sub(r"^\[\d+\]\s*", "", e["value"]).strip().upper()
+                        emap[clean] = e["id"]
+                        emap[e["value"].strip().upper()] = e["id"]
+                    enum_lookup[f["id"]] = emap
+
         # PATCH campos novos na Kommo (criados)
         cfv_batch_new = []
         name_patch = []
