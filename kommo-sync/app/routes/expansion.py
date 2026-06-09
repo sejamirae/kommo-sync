@@ -1230,3 +1230,57 @@ async def fix_status_options(db: AsyncSession = Depends(get_db)):
         "enums_atuais": current_enums,
     }
 
+@router.post("/recreate-status-clean", summary="Recria o campo Status sem emoji para testar")
+async def recreate_status_clean(db: AsyncSession = Depends(get_db)):
+    from app.services.kommo import get_valid_token
+    import httpx as _httpx
+
+    access_token = await get_valid_token(db)
+    H = {"Authorization": f"Bearer {access_token}"}
+
+    OLD_STATUS_ID = 4331833
+    STATUS_OPTIONS = [
+        "Lead Captado",
+        "Adicionado no Corpo Clínico",
+        "Cadastro Enviado para Mirae",
+        "Cadastro Mirae Aprovado",
+        "Cadastro Mirae Negado",
+        "Cadastro do Cliente Enviado",
+        "Cadastro do Cliente Incompleto",
+        "Cadastro do Cliente Completo",
+        "Agenda Solicitada",
+        "Agenda Negada",
+        "Agenda Confirmada",
+        "Desistência",
+    ]
+
+    async with _httpx.AsyncClient(timeout=60) as client:
+        # Apaga o campo antigo
+        await client.delete(f"{BASE}/leads/custom_fields/{OLD_STATUS_ID}", headers=H)
+
+        # Cria novo campo com enums no formato correto (sem id, só value e sort)
+        enums = [{"value": opt, "sort": i + 1} for i, opt in enumerate(STATUS_OPTIONS)]
+        r = await client.post(
+            f"{BASE}/leads/custom_fields",
+            headers=H,
+            json=[{"name": "Status", "type": "select", "enums": enums}],
+        )
+        status_code = r.status_code
+        body = r.json() if r.status_code in (200, 201) else r.text
+
+        new_id = None
+        confirmed = []
+        if r.status_code in (200, 201):
+            new_field = r.json().get("_embedded", {}).get("custom_fields", [{}])[0]
+            new_id = new_field.get("id")
+            # Lê de volta
+            resp = await client.get(f"{BASE}/leads/custom_fields/{new_id}", headers=H)
+            field = resp.json()
+            raw_enums = field.get("enums")
+            if isinstance(raw_enums, dict):
+                confirmed = [v["value"] for v in raw_enums.values()]
+            elif isinstance(raw_enums, list):
+                confirmed = [e["value"] for e in raw_enums]
+
+    return {"new_status_id": new_id, "http": status_code, "enums_confirmados": confirmed}
+
