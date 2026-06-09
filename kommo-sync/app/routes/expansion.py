@@ -1046,3 +1046,31 @@ async def fix_vaga_multiselect(db: AsyncSession = Depends(get_db)):
         "errors": errors,
     }
 
+@router.post("/delete-old-text-fields", summary="Apaga os 4 campos de texto antigos (Especialidade, Cliente, Gestor, Vaga)")
+async def delete_old_text_fields(db: AsyncSession = Depends(get_db)):
+    from app.services.kommo import get_valid_token
+    import httpx as _httpx
+
+    access_token = await get_valid_token(db)
+    H = {"Authorization": f"Bearer {access_token}"}
+
+    # IDs dos campos de TEXTO antigos (NÃO os multiselect com ▾)
+    OLD_FIELDS = {
+        "Especialidade": 4331377,
+        "Cliente": 4331379,
+        "Gestor": 4330995,
+        "Vaga": 4331511,
+    }
+
+    deleted = []
+    errors = []
+    async with _httpx.AsyncClient(timeout=60) as client:
+        for name, fid in OLD_FIELDS.items():
+            r = await client.delete(f"{BASE}/leads/custom_fields/{fid}", headers=H)
+            if r.status_code in (200, 204):
+                deleted.append(f"{name} (id:{fid})")
+            else:
+                errors.append(f"{name} (id:{fid}): HTTP {r.status_code} - {r.text[:100]}")
+
+    return {"deleted": deleted, "errors": errors}
+
