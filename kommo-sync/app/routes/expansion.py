@@ -1324,3 +1324,60 @@ async def rewrite_status_labels(db: AsyncSession = Depends(get_db)):
         )
         return {"status_id": status_id, "http": r.status_code, "options": STATUS_OPTIONS}
 
+@router.post("/migrate-status-to-kommo", summary="Migra status_lead do banco para o campo Status da Kommo")
+async def migrate_status_to_kommo(db: AsyncSession = Depends(get_db)):
+    from app.services.kommo import get_valid_token
+    import httpx as _httpx
+    import re as _re
+
+    access_token = await get_valid_token(db)
+    H = {"Authorization": f"Bearer {access_token}"}
+    STATUS_ID = 4331839
+
+    async with _httpx.AsyncClient(timeout=60) as client:
+        # Lê os enums do campo Status
+        resp = await client.get(f"{BASE}/leads/custom_fields/{STATUS_ID}", headers=H)
+        field = resp.json()
+        raw_enums = field.get("enums")
+        # Mapa: nome limpo (sem [n]) → enum_id
+        enum_map = {}
+        items = raw_enums.values() if isinstance(raw_enums, dict) else raw_enums
+        for e in items:
+            clean = _re.sub(r"^\[\d+\]\s*", "", e["value"]).strip().lower()
+            enum_map[clean] = e["id"]
+
+    # Lê status do banco
+    result = await db.execute(select(ExpansionField))
+    rows = result.scalars().all()
+
+    patches = []
+    missing = set()
+    for ef in rows:
+        st = (ef.status_lead or "").strip()
+        if not st:
+            continue
+        eid = enum_map.get(st.lower())
+        if eid:
+            patches.append({
+                "id": ef.lead_id,
+                "custom_fields_values": [
+                    {"field_id": STATUS_ID, "values": [{"enum_id": eid}]}
+                ]
+            })
+        else:
+            missing.add(st)
+
+    BATCH = 50
+    patched = 0
+    errors = []
+    async with _httpx.AsyncClient(timeout=60) as client:
+        for i in range(0, len(patches), BATCH):
+            chunk = patches[i:i+BATCH]
+            r = await client.patch(f"{BASE}/leads", headers=H, json=chunk)
+            if r.status_code in (200, 201):
+                patched += len(chunk)
+            else:
+                errors.append(f"Lote {i}: HTTP {r.status_code} - {r.text[:80]}")
+
+    return {"patched": patched, "total": len(rows), "missing": list(missing), "errors": errors}
+
