@@ -819,8 +819,10 @@ MULTISELECT_OPTIONS = {
     "Cliente ▾": ["DR. CONSULTA", "HAPVIDA", "HOSPITAL SANTA CASA DE MAUÁ - MAUÁ/SP",
                   "HOSPITAL SÃO FRANCISCO - COTIA/SP"],
     "Gestor ▾": ["ALESSANDRA", "ANDRÉ", "FELIPE", "JÉSSICA", "PEDRO HENRIQUE"],
-    "Vaga ▾": ["DERMATOLOGIA EM DIVERSAS LOCALIDADES DE SÃO PAULO/SP", "PORTA/MÉDICO CHEFE COTIA-SP",
-               "PORTA/MÉDICO CHEFE MAUÁ-SP", "UTI EM SANTO ANDRÉ"],
+    "Vaga ▾": ["*Dermatologia* em diversas localidades de São Paulo/SP",
+               "*Porta*: 12 MESES de experiência em P.A. com ACLS ativo. & *Médico Chefe*: 5 anos de experiência OU Residência/Pós-graduação na área com ACLS ativo. Em *COTIA-SP*.",
+               "*Porta*: 12 MESES de experiência em P.A. & *Médico Chefe*: 1 ano de formação + experiencia em emergência. Em *MAUÁ-SP*.",
+               "UTI em Santo André"],
 }
 
 # Mapa coluna do banco → nome do campo multiselect
@@ -843,15 +845,7 @@ def _normalize_value(col, raw):
             return ESPECIALIDADE_SPLIT[raw]
         return [raw.upper()]
     elif col == "vaga":
-        # Mapeia para forma curta
-        if raw.startswith("*Dermatologia*"):
-            return ["DERMATOLOGIA EM DIVERSAS LOCALIDADES DE SÃO PAULO/SP"]
-        if "COTIA" in raw.upper() and "PORTA" in raw.upper():
-            return ["PORTA/MÉDICO CHEFE COTIA-SP"]
-        if "MAUÁ" in raw.upper() and "PORTA" in raw.upper():
-            return ["PORTA/MÉDICO CHEFE MAUÁ-SP"]
-        if "UTI EM SANTO ANDRÉ" in raw.upper() or raw == "UTI em Santo André":
-            return ["UTI EM SANTO ANDRÉ"]
+        # Mantém o valor EXATO, sem normalizar
         return [raw]
     else:
         # cliente, gestor → maiúsculo
@@ -974,6 +968,81 @@ async def migrate_to_multiselect(db: AsyncSession = Depends(get_db)):
         "patched": patched,
         "total_leads": len(rows),
         "missing_enums": {k: list(v) for k, v in new_enums_needed.items()},
+        "errors": errors,
+    }
+
+@router.post("/fix-vaga-multiselect", summary="Recria opções da Vaga com texto exato e remigra")
+async def fix_vaga_multiselect(db: AsyncSession = Depends(get_db)):
+    from app.services.kommo import get_valid_token
+    import httpx as _httpx
+
+    access_token = await get_valid_token(db)
+    H = {"Authorization": f"Bearer {access_token}"}
+
+    vaga_options = MULTISELECT_OPTIONS["Vaga ▾"]
+
+    async with _httpx.AsyncClient(timeout=60) as client:
+        # Encontra o campo Vaga ▾
+        resp = await client.get(f"{BASE}/leads/custom_fields", headers=H, params={"limit": 250})
+        all_fields = resp.json().get("_embedded", {}).get("custom_fields", [])
+        vaga_field = next((f for f in all_fields if f["name"] == "Vaga ▾"), None)
+        if not vaga_field:
+            return {"error": "Campo Vaga ▾ não encontrado"}
+
+        vaga_id = vaga_field["id"]
+
+        # Atualiza os enums do campo com os valores exatos
+        enums = [{"value": opt, "sort": i} for i, opt in enumerate(vaga_options)]
+        r = await client.patch(
+            f"{BASE}/leads/custom_fields/{vaga_id}",
+            headers=H,
+            json={"enums": enums},
+        )
+        if r.status_code not in (200, 201):
+            return {"error": f"Erro ao atualizar enums: HTTP {r.status_code} - {r.text[:200]}"}
+
+        # Busca os enums atualizados
+        resp2 = await client.get(f"{BASE}/leads/custom_fields/{vaga_id}", headers=H)
+        updated_field = resp2.json()
+        enum_map = {e["value"]: e["id"] for e in (updated_field.get("enums") or [])}
+
+    # Remigra a Vaga para todos os leads
+    result = await db.execute(select(ExpansionField))
+    rows = result.scalars().all()
+
+    patches = []
+    missing = set()
+    for ef in rows:
+        raw = (ef.vaga or "").strip()
+        if not raw:
+            continue
+        eid = enum_map.get(raw)
+        if eid:
+            patches.append({
+                "id": ef.lead_id,
+                "custom_fields_values": [
+                    {"field_id": vaga_id, "values": [{"enum_id": eid}]}
+                ]
+            })
+        else:
+            missing.add(raw)
+
+    BATCH = 50
+    patched = 0
+    errors = []
+    async with _httpx.AsyncClient(timeout=60) as client:
+        for i in range(0, len(patches), BATCH):
+            chunk = patches[i:i+BATCH]
+            r = await client.patch(f"{BASE}/leads", headers=H, json=chunk)
+            if r.status_code in (200, 201):
+                patched += len(chunk)
+            else:
+                errors.append(f"Lote {i}: HTTP {r.status_code} - {r.text[:80]}")
+
+    return {
+        "enums_atualizados": list(enum_map.keys()),
+        "patched": patched,
+        "missing": list(missing),
         "errors": errors,
     }
 
