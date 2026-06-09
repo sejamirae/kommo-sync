@@ -802,3 +802,178 @@ async def remove_team_member(name: str, role: str, db: AsyncSession = Depends(ge
     await db.commit()
     return {"ok": True}
 
+# ─────────────────────────────────────────────
+# Migração: campos texto → multiselect
+# ─────────────────────────────────────────────
+
+# Mapa de normalização de especialidades compostas → lista de opções
+ESPECIALIDADE_SPLIT = {
+    "CIRURGIA GERAL /CANCEROLOGIA CIRÚRGICA": ["CIRURGIA GERAL", "CANCEROLOGIA CIRÚRGICA"],
+    "CIRURGIA GERAL / Ecografia Vascular com DOPPLER": ["CIRURGIA GERAL", "ECOGRAFIA VASCULAR COM DOPPLER"],
+}
+
+# Opções iniciais de cada campo multiselect
+MULTISELECT_OPTIONS = {
+    "Especialidade ▾": ["CIRURGIA GERAL", "CANCEROLOGIA CIRÚRGICA", "ECOGRAFIA VASCULAR COM DOPPLER",
+                         "CLÍNICA MÉDICA", "DERMATOLOGIA", "PEDIATRIA", "MÉDICO SEM ESPECIALIDADE REGISTRADA"],
+    "Cliente ▾": ["DR. CONSULTA", "HAPVIDA", "HOSPITAL SANTA CASA DE MAUÁ - MAUÁ/SP",
+                  "HOSPITAL SÃO FRANCISCO - COTIA/SP"],
+    "Gestor ▾": ["ALESSANDRA", "ANDRÉ", "FELIPE", "JÉSSICA", "PEDRO HENRIQUE"],
+    "Vaga ▾": ["DERMATOLOGIA EM DIVERSAS LOCALIDADES DE SÃO PAULO/SP", "PORTA/MÉDICO CHEFE COTIA-SP",
+               "PORTA/MÉDICO CHEFE MAUÁ-SP", "UTI EM SANTO ANDRÉ"],
+}
+
+# Mapa coluna do banco → nome do campo multiselect
+COL_TO_MULTI = {
+    "especialidade": "Especialidade ▾",
+    "cliente": "Cliente ▾",
+    "gestor": "Gestor ▾",
+    "vaga": "Vaga ▾",
+}
+
+
+def _normalize_value(col, raw):
+    """Normaliza um valor de texto para lista de opções do multiselect."""
+    if not raw:
+        return []
+    raw = raw.strip()
+    if col == "especialidade":
+        # Verifica se é composta
+        if raw in ESPECIALIDADE_SPLIT:
+            return ESPECIALIDADE_SPLIT[raw]
+        return [raw.upper()]
+    elif col == "vaga":
+        # Mapeia para forma curta
+        if raw.startswith("*Dermatologia*"):
+            return ["DERMATOLOGIA EM DIVERSAS LOCALIDADES DE SÃO PAULO/SP"]
+        if "COTIA" in raw.upper() and "PORTA" in raw.upper():
+            return ["PORTA/MÉDICO CHEFE COTIA-SP"]
+        if "MAUÁ" in raw.upper() and "PORTA" in raw.upper():
+            return ["PORTA/MÉDICO CHEFE MAUÁ-SP"]
+        if "UTI EM SANTO ANDRÉ" in raw.upper() or raw == "UTI em Santo André":
+            return ["UTI EM SANTO ANDRÉ"]
+        return [raw]
+    else:
+        # cliente, gestor → maiúsculo
+        return [raw.upper()]
+
+
+@router.post("/create-multiselect-fields", summary="Cria campos multiselect na Kommo (rodar 1x)")
+async def create_multiselect_fields(db: AsyncSession = Depends(get_db)):
+    from app.services.kommo import get_valid_token
+    import httpx as _httpx
+
+    access_token = await get_valid_token(db)
+    H = {"Authorization": f"Bearer {access_token}"}
+
+    # Busca campos existentes
+    async with _httpx.AsyncClient(timeout=60) as client:
+        resp = await client.get(f"{BASE}/leads/custom_fields", headers=H, params={"limit": 250})
+        all_fields = resp.json().get("_embedded", {}).get("custom_fields", [])
+        existing = {f["name"]: f for f in all_fields}
+
+        created = []
+        result_ids = {}
+
+        for fname, options in MULTISELECT_OPTIONS.items():
+            if fname in existing:
+                fid = existing[fname]["id"]
+                result_ids[fname] = fid
+                created.append(f"{fname} JÁ EXISTE (id:{fid})")
+                continue
+
+            # Cria campo multiselect com enums
+            enums = [{"value": opt, "sort": i} for i, opt in enumerate(options)]
+            payload = [{
+                "name": fname,
+                "type": "multiselect",
+                "enums": enums,
+            }]
+            r = await client.post(f"{BASE}/leads/custom_fields", headers=H, json=payload)
+            if r.status_code in (200, 201):
+                new_field = r.json().get("_embedded", {}).get("custom_fields", [{}])[0]
+                fid = new_field.get("id")
+                result_ids[fname] = fid
+                created.append(f"{fname} CRIADO (id:{fid})")
+            else:
+                created.append(f"{fname} ERRO: HTTP {r.status_code} - {r.text[:100]}")
+
+    return {"created": created, "field_ids": result_ids}
+
+
+@router.post("/migrate-to-multiselect", summary="Migra dados texto → multiselect (rodar após criar campos)")
+async def migrate_to_multiselect(db: AsyncSession = Depends(get_db)):
+    from app.services.kommo import get_valid_token
+    import httpx as _httpx
+
+    access_token = await get_valid_token(db)
+    H = {"Authorization": f"Bearer {access_token}"}
+
+    async with _httpx.AsyncClient(timeout=60) as client:
+        # Busca os campos multiselect e seus enums
+        resp = await client.get(f"{BASE}/leads/custom_fields", headers=H, params={"limit": 250})
+        all_fields = resp.json().get("_embedded", {}).get("custom_fields", [])
+
+        # Mapa: nome do campo → {id, {valor_upper: enum_id}}
+        multi_fields = {}
+        for f in all_fields:
+            if f["name"] in MULTISELECT_OPTIONS:
+                enum_map = {}
+                for e in (f.get("enums") or []):
+                    enum_map[e["value"].upper()] = e["id"]
+                multi_fields[f["name"]] = {"id": f["id"], "enums": enum_map}
+
+        if len(multi_fields) < 4:
+            return {"error": "Campos multiselect não encontrados. Rode /create-multiselect-fields primeiro.",
+                    "found": list(multi_fields.keys())}
+
+    # Lê os expansion_fields do banco
+    result = await db.execute(select(ExpansionField))
+    rows = result.scalars().all()
+
+    patches = []
+    new_enums_needed = {}  # campo → set de valores que faltam
+
+    for ef in rows:
+        cfv = []
+        for col, fname in COL_TO_MULTI.items():
+            raw = getattr(ef, col, None)
+            if not raw:
+                continue
+            opcoes = _normalize_value(col, raw)
+            enum_map = multi_fields[fname]["enums"]
+            enum_ids = []
+            for opt in opcoes:
+                eid = enum_map.get(opt.upper())
+                if eid:
+                    enum_ids.append(eid)
+                else:
+                    new_enums_needed.setdefault(fname, set()).add(opt)
+            if enum_ids:
+                cfv.append({
+                    "field_id": multi_fields[fname]["id"],
+                    "values": [{"enum_id": eid} for eid in enum_ids]
+                })
+        if cfv:
+            patches.append({"id": ef.lead_id, "custom_fields_values": cfv})
+
+    # Aplica os patches em lotes de 50
+    BATCH = 50
+    patched = 0
+    errors = []
+    async with _httpx.AsyncClient(timeout=60) as client:
+        for i in range(0, len(patches), BATCH):
+            chunk = patches[i:i+BATCH]
+            r = await client.patch(f"{BASE}/leads", headers=H, json=chunk)
+            if r.status_code in (200, 201):
+                patched += len(chunk)
+            else:
+                errors.append(f"Lote {i}: HTTP {r.status_code} - {r.text[:80]}")
+
+    return {
+        "patched": patched,
+        "total_leads": len(rows),
+        "missing_enums": {k: list(v) for k, v in new_enums_needed.items()},
+        "errors": errors,
+    }
+
