@@ -1,7 +1,7 @@
 # app/routes/webhook.py
 import re
 import json
-from fastapi import APIRouter, Depends, Request, HTTPException
+from fastapi import APIRouter, Depends, Request, HTTPException, BackgroundTasks
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
@@ -12,23 +12,40 @@ router = APIRouter(prefix="/webhook", tags=["Webhook"])
 settings = get_settings()
 
 
+async def _process_in_background(payload: dict):
+    """Processa o webhook em background, com sessão própria."""
+    from app.database import AsyncSessionLocal
+    try:
+        async with AsyncSessionLocal() as db:
+            await process_webhook_payload(payload, db)
+    except Exception as e:
+        print(f"[webhook background] erro: {e}")
+
+
 @router.post("/kommo", summary="Recebe eventos da Kommo via webhook")
 async def kommo_webhook(
     request: Request,
-    db: AsyncSession = Depends(get_db),
+    background_tasks: BackgroundTasks,
 ):
-    if settings.WEBHOOK_SECRET:
-        secret = request.headers.get("X-Kommo-Secret", "")
-        if secret != settings.WEBHOOK_SECRET:
-            raise HTTPException(status_code=403, detail="Invalid webhook secret")
+    # Responde 200 IMEDIATAMENTE para a Kommo não desativar o webhook.
+    # O processamento real acontece em background.
+    try:
+        if settings.WEBHOOK_SECRET:
+            secret = request.headers.get("X-Kommo-Secret", "")
+            if secret != settings.WEBHOOK_SECRET:
+                # Mesmo com secret inválido, retorna 200 para não desativar
+                return {"status": "ignored"}
 
-    # Kommo envia form-encoded: leads[status][0][id]=123&leads[status][0][pipeline_id]=456
-    form = await request.form()
-    payload: dict = {}
-    for key, value in form.multi_items():
-        _set_nested(payload, key, value)
+        form = await request.form()
+        payload: dict = {}
+        for key, value in form.multi_items():
+            _set_nested(payload, key, value)
 
-    await process_webhook_payload(payload, db)
+        background_tasks.add_task(_process_in_background, payload)
+    except Exception as e:
+        print(f"[webhook] erro ao receber: {e}")
+
+    # SEMPRE retorna 200 rápido
     return {"status": "ok"}
 
 
